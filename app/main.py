@@ -1,16 +1,18 @@
 """
-Media Organizer - 自动整理 NAS 上的电影/剧集文件
-- 监控下载目录
-- 规则 + TMDB + LLM 三级识别
-- 移动/硬链接/复制到媒体库,标准命名
+AutoReel - NAS 影视文件自动整理
+- 读取 /config/settings.json
+- 启动后扫描输入目录
+- 持续监听输入目录
+- 根目录单文件: 识别成功后整理,失败移入未识别目录
+- 根目录子目录: 作为一个批次,全部视频识别成功才整理,否则整个目录移入未识别目录
 """
-import os
-import sys
-import time
 import logging
+import os
+import time
 from pathlib import Path
-from watchdog.observers import Observer
+
 from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 from config import settings
 from organizer import MediaOrganizer
@@ -22,73 +24,124 @@ logging.basicConfig(
 log = logging.getLogger("main")
 
 
-class DownloadHandler(FileSystemEventHandler):
-    """监听下载目录的新文件"""
+class InputHandler(FileSystemEventHandler):
+    """监听输入目录,把根目录文件和根目录子目录作为事件处理。"""
 
     def __init__(self, organizer: MediaOrganizer):
         self.organizer = organizer
-        self.pending = {}  # 防抖:文件可能还在写入
+        self.pending = {}
+        self.watch_dir = Path(settings.WATCH_DIR).resolve()
+        self.unrecognized_dir = Path(settings.unrecognized_dir).resolve()
 
     def on_created(self, event):
-        if event.is_directory:
-            return
-        self._queue(event.src_path)
+        self.queue(event.src_path)
+
+    def on_modified(self, event):
+        self.queue(event.src_path)
 
     def on_moved(self, event):
-        if event.is_directory:
-            return
-        self._queue(event.dest_path)
+        self.queue(event.dest_path)
 
-    def _queue(self, path):
-        if not self._is_video(path):
+    def queue(self, path: str):
+        target = self.event_target(path)
+        if not target:
             return
-        # 等文件写完再处理(5 秒静默期)
-        self.pending[path] = time.time()
+        self.pending[str(target)] = time.time()
 
-    def _is_video(self, path):
-        return Path(path).suffix.lower() in settings.VIDEO_EXTENSIONS
+    def event_target(self, path: str) -> Path | None:
+        path_obj = Path(path)
+        try:
+            resolved = path_obj.resolve()
+            rel = resolved.relative_to(self.watch_dir)
+        except (OSError, ValueError):
+            return None
+
+        if self.is_in_unrecognized(resolved):
+            return None
+
+        parts = rel.parts
+        if not parts:
+            return None
+
+        first = self.watch_dir / parts[0]
+        if first.resolve() == self.unrecognized_dir:
+            return None
+
+        if first.is_dir():
+            return first
+
+        if first.is_file() and first.suffix.lower() in settings.VIDEO_EXTENSIONS:
+            return first
+
+        return None
+
+    def is_in_unrecognized(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to(self.unrecognized_dir)
+            return True
+        except (OSError, ValueError):
+            return False
 
     def flush(self):
-        """处理静默期已过的文件"""
         now = time.time()
-        ready = [p for p, t in self.pending.items() if now - t >= 5]
+        ready = [p for p, t in self.pending.items() if now - t >= settings.QUIET_SECONDS]
         for path in ready:
             del self.pending[path]
-            try:
-                self.organizer.process(path)
-            except Exception as e:
-                log.exception(f"处理失败 {path}: {e}")
+            self.process(path)
+
+    def process(self, path: str):
+        path_obj = Path(path)
+        if self.is_in_unrecognized(path_obj):
+            return
+        if path_obj.is_dir():
+            log.info(f"处理目录批次: {path}")
+            self.organizer.process_directory(path)
+        elif path_obj.is_file() and path_obj.suffix.lower() in settings.VIDEO_EXTENSIONS:
+            log.info(f"处理单文件: {path}")
+            self.organizer.process(path)
 
 
-def scan_existing(organizer: MediaOrganizer):
-    """启动时扫描存量文件"""
-    log.info(f"扫描存量目录: {settings.WATCH_DIR}")
-    count = 0
-    for root, dirs, files in os.walk(settings.WATCH_DIR):
-        for f in files:
-            if Path(f).suffix.lower() in settings.VIDEO_EXTENSIONS:
-                path = os.path.join(root, f)
-                try:
-                    organizer.process(path)
-                    count += 1
-                except Exception as e:
-                    log.exception(f"存量处理失败 {path}: {e}")
-    log.info(f"存量扫描完成,处理 {count} 个文件")
+def ensure_dirs():
+    Path(settings.WATCH_DIR).mkdir(parents=True, exist_ok=True)
+    Path(settings.MOVIE_DIR).mkdir(parents=True, exist_ok=True)
+    Path(settings.TV_DIR).mkdir(parents=True, exist_ok=True)
+    Path(settings.unrecognized_dir).mkdir(parents=True, exist_ok=True)
+
+
+def scan_existing(handler: InputHandler):
+    """启动时扫描输入目录的第一层:根目录视频文件 + 根目录子目录。"""
+    log.info(f"扫描输入目录: {settings.WATCH_DIR}")
+    watch = Path(settings.WATCH_DIR)
+    for item in sorted(watch.iterdir(), key=lambda p: p.name):
+        try:
+            if item.resolve() == Path(settings.unrecognized_dir).resolve():
+                continue
+        except OSError:
+            continue
+
+        if item.is_dir():
+            handler.process(str(item))
+        elif item.is_file() and item.suffix.lower() in settings.VIDEO_EXTENSIONS:
+            handler.process(str(item))
+    log.info("输入目录扫描完成")
 
 
 def main():
-    log.info("Media Organizer 启动")
-    log.info(f"监控目录: {settings.WATCH_DIR}")
-    log.info(f"输出根目录: {settings.OUTPUT_ROOT}")
+    log.info("AutoReel 启动")
+    log.info(f"配置文件: {settings.CONFIG_FILE}")
+    log.info(f"输入目录: {settings.WATCH_DIR}")
+    log.info(f"电影目录: {settings.MOVIE_DIR}")
+    log.info(f"剧集目录: {settings.TV_DIR}")
+    log.info(f"未识别目录: {settings.unrecognized_dir}")
+    log.info(f"文件动作: {settings.FILE_ACTION}, Dry Run: {settings.DRY_RUN}")
 
+    ensure_dirs()
     organizer = MediaOrganizer()
+    handler = InputHandler(organizer)
 
-    # 启动时扫描一次
     if settings.SCAN_ON_START:
-        scan_existing(organizer)
+        scan_existing(handler)
 
-    # 持续监控
-    handler = DownloadHandler(organizer)
     observer = Observer()
     observer.schedule(handler, settings.WATCH_DIR, recursive=True)
     observer.start()

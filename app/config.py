@@ -1,10 +1,10 @@
-"""配置加载 - Web 配置文件优先,环境变量兜底"""
+"""配置加载 - 从 JSON 配置文件读取,环境变量仅用于指定配置文件路径。"""
 import json
 import os
 from pathlib import Path
 
 
-def load_web_config(path: str) -> dict:
+def load_config(path: str) -> dict:
     config_path = Path(path)
     if not config_path.exists():
         return {}
@@ -17,49 +17,57 @@ def load_web_config(path: str) -> dict:
 
 
 CONFIG_FILE = os.getenv("CONFIG_FILE", "/config/settings.json")
-WEB_CONFIG = load_web_config(CONFIG_FILE)
+APP_CONFIG = load_config(CONFIG_FILE)
 
 
 def get_config(key: str, default: str = ""):
-    value = WEB_CONFIG.get(key)
+    value = APP_CONFIG.get(key)
     if value not in (None, ""):
         return value
-    return os.getenv(key, default)
+    return default
+
+
+def get_bool(key: str, default: bool = False) -> bool:
+    return str(get_config(key, str(default))).lower() in {"1", "true", "yes", "on"}
+
+
+def get_int(key: str, default: int) -> int:
+    try:
+        return int(get_config(key, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 class Settings:
     CONFIG_FILE = CONFIG_FILE
-    WEB_CONFIG = WEB_CONFIG
+    APP_CONFIG = APP_CONFIG
 
     # 路径配置
-    WATCH_DIR = get_config("WATCH_DIR", "/host/volume1/downloads")
-    OUTPUT_ROOT = get_config("OUTPUT_ROOT", "/host/volume1/media")
-    MOVIE_DIR_NAME = get_config("MOVIE_DIR_NAME", "Movies")
-    TV_DIR_NAME = get_config("TV_DIR_NAME", "TV")
+    WATCH_DIR = get_config("WATCH_DIR", "/host/emby/source")
+    MOVIE_DIR = get_config("MOVIE_DIR", "/host/emby/电影")
+    TV_DIR = get_config("TV_DIR", "/host/emby/剧集")
+    UNRECOGNIZED_DIR_NAME = get_config("UNRECOGNIZED_DIR_NAME", "_unrecognized")
+    UNRECOGNIZED_DIR = get_config("UNRECOGNIZED_DIR", "")
 
     # TMDB
     TMDB_API_KEY = get_config("TMDB_API_KEY", "")
     TMDB_LANG = get_config("TMDB_LANG", "zh-CN")
 
-    # LLM (LiteLLM gateway). Web 配置文件优先,环境变量兜底。
-    LITELLM_BASE = get_config("LITELLM_BASE", "http://litellm:4000")
-    LITELLM_KEY = get_config("LITELLM_KEY", "")
-    LITELLM_MODEL = get_config("LITELLM_MODEL", "gemini-flash")
-
     # 行为
-    DRY_RUN = str(get_config("DRY_RUN", "true")).lower() == "true"
-    SCAN_ON_START = str(get_config("SCAN_ON_START", "false")).lower() == "true"
+    DRY_RUN = get_bool("DRY_RUN", True)
+    SCAN_ON_START = get_bool("SCAN_ON_START", True)
+    QUIET_SECONDS = get_int("QUIET_SECONDS", 10)
     # 文件处理模式:
     # - move: 移动/重命名源文件到媒体库
     # - hardlink: 保留下载源文件,在媒体库创建硬链接
     # - copy: 复制一份到媒体库
     FILE_ACTION = str(get_config("FILE_ACTION", "")).lower().strip()
     if not FILE_ACTION:
-        FILE_ACTION = os.getenv("FILE_ACTION", "move").lower().strip()
+        FILE_ACTION = "move"
     if FILE_ACTION not in {"move", "hardlink", "copy"}:
         FILE_ACTION = "move"
     USE_HARDLINK = FILE_ACTION == "hardlink"
-    MIN_FILE_SIZE_MB = int(get_config("MIN_FILE_SIZE_MB", "100"))  # 过滤样片
+    MIN_FILE_SIZE_MB = get_int("MIN_FILE_SIZE_MB", 100)  # 过滤样片
 
     # 视频后缀
     VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".flv", ".rmvb", ".webm"}
@@ -76,6 +84,12 @@ class Settings:
     # 通知 (复用你已有的 Telegram bot)
     TELEGRAM_BOT_TOKEN = get_config("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = get_config("TELEGRAM_CHAT_ID", "")
+
+    @property
+    def unrecognized_dir(self) -> str:
+        if self.UNRECOGNIZED_DIR:
+            return self.UNRECOGNIZED_DIR
+        return str(Path(self.WATCH_DIR) / self.UNRECOGNIZED_DIR_NAME)
 
 
 settings = Settings()

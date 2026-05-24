@@ -1,6 +1,6 @@
 """
 核心整理器:
-  parser (规则) -> TMDB -> LLM 兜底 -> TMDB -> 移动/硬链接/复制 + 重命名
+  parser (规则) -> TMDB -> 移动/硬链接/复制 + 重命名
 """
 import os
 import re
@@ -8,11 +8,10 @@ import sqlite3
 import logging
 import shutil
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
 
 import parser as pname
 from tmdb import TMDBClient
-from llm import LLMParser
 from config import settings
 from notify import notify
 
@@ -24,6 +23,21 @@ def safe_name(name: str) -> str:
     name = re.sub(r'[\\/:*?"<>|]', '_', name)
     name = re.sub(r'\s+', ' ', name).strip()
     return name
+
+
+def unique_path(path: str) -> str:
+    """目标已存在时追加序号,避免覆盖。"""
+    target = Path(path)
+    if not target.exists():
+        return str(target)
+    parent = target.parent
+    stem = target.stem
+    suffix = target.suffix
+    for i in range(1, 1000):
+        candidate = parent / f"{stem}.{i}{suffix}"
+        if not candidate.exists():
+            return str(candidate)
+    raise FileExistsError(f"无法生成唯一目标路径: {path}")
 
 
 class StateDB:
@@ -103,11 +117,10 @@ class StateDB:
 class MediaOrganizer:
     def __init__(self):
         self.tmdb = TMDBClient()
-        self.llm = LLMParser()
         self.state = StateDB(settings.STATE_DB)
 
     def identify(self, filename: str) -> Optional[Dict]:
-        """三级识别:规则 -> TMDB -> LLM -> TMDB"""
+        """识别:规则解析 -> TMDB 查询。"""
         # Step 1: 规则解析
         parsed = pname.parse(filename)
         log.debug(f"规则解析: {parsed}")
@@ -122,25 +135,7 @@ class MediaOrganizer:
                 log.info(f"规则+TMDB 命中: {filename} -> {result['title']} ({result['year']})")
                 return result
 
-        # Step 3: LLM 兜底
-        log.info(f"规则识别失败,启用 LLM 兜底: {filename}")
-        llm_result = self.llm.parse(filename)
-        if not llm_result:
-            return None
-
-        # Step 4: 用 LLM 结果再查 TMDB
-        result = self.tmdb.identify(
-            llm_result.get("title", ""),
-            llm_result.get("year"),
-            llm_result.get("type") == "tv",
-        )
-        if result:
-            result["season"] = llm_result.get("season")
-            result["episode"] = llm_result.get("episode")
-            log.info(f"LLM+TMDB 命中: {filename} -> {result['title']} ({result['year']})")
-            return result
-
-        log.warning(f"完全无法识别: {filename}")
+        log.warning(f"无法识别: {filename}")
         return None
 
     def build_target_path(self, src: str, info: Dict) -> str:
@@ -153,7 +148,7 @@ class MediaOrganizer:
             # /media/Movies/电影名 (2024)/电影名 (2024).mkv
             folder = f"{title} ({year})"
             filename = f"{title} ({year}){ext}"
-            return os.path.join(settings.OUTPUT_ROOT, settings.MOVIE_DIR_NAME, folder, filename)
+            return os.path.join(settings.MOVIE_DIR, folder, filename)
         else:
             # /media/TV/剧集名 (2024)/Season 01/剧集名 - S01E01.mkv
             folder = f"{title} ({year})"
@@ -162,9 +157,7 @@ class MediaOrganizer:
             season_dir = f"Season {season:02d}"
             ep_str = f"S{season:02d}E{episode:02d}" if episode else f"S{season:02d}"
             filename = f"{title} - {ep_str}{ext}"
-            return os.path.join(
-                settings.OUTPUT_ROOT, settings.TV_DIR_NAME, folder, season_dir, filename
-            )
+            return os.path.join(settings.TV_DIR, folder, season_dir, filename)
 
     def transfer_file(self, src: str, dst: str):
         """按配置移动、硬链接或复制文件到目标路径。"""
@@ -215,6 +208,28 @@ class MediaOrganizer:
                 except Exception as e:
                     log.warning(f"字幕处理失败 {sub}: {e}")
 
+    def move_to_unrecognized(self, src: str, reason: str) -> str:
+        """把未识别文件或目录移入未识别目录。"""
+        unrecognized_dir = Path(settings.unrecognized_dir)
+        dst = unrecognized_dir / Path(src).name
+
+        if settings.DRY_RUN:
+            log.info(f"[DRY-RUN][unrecognized] {src} -> {dst} ({reason})")
+            return str(dst)
+
+        unrecognized_dir.mkdir(parents=True, exist_ok=True)
+        dst = Path(unique_path(str(dst)))
+        shutil.move(src, dst)
+        log.info(f"移入未识别目录: {src} -> {dst}")
+        return str(dst)
+
+    def write_reason_file(self, directory: str, name: str, detail: str):
+        if settings.DRY_RUN:
+            log.info(f"[DRY-RUN] 写入未识别原因: {directory}/{name}")
+            return
+        path = Path(directory) / safe_name(name)
+        path.write_text(detail, encoding="utf-8")
+
     def process(self, src: str):
         """处理单个文件 - 主入口"""
         src = os.path.abspath(src)
@@ -239,8 +254,11 @@ class MediaOrganizer:
         info = self.identify(Path(src).name)
         if not info:
             notify(f"⚠️ 无法识别: {Path(src).name}")
-            self.state.mark_failed(src, "unidentified", "规则、TMDB、LLM 均未识别成功")
-            return {"status": "failed", "reason": "unidentified", "src": src}
+            self.state.mark_failed(src, "unidentified", "规则和 TMDB 均未识别成功")
+            reason_name = f"{Path(src).name} 未识别到.txt"
+            dst = self.move_to_unrecognized(src, "unidentified")
+            self.write_reason_file(Path(dst).parent, reason_name, f"文件未识别到:\n{src}\n")
+            return {"status": "failed", "reason": "unidentified", "src": src, "dst": dst}
 
         # 构造目标路径
         dst = self.build_target_path(src, info)
@@ -263,6 +281,81 @@ class MediaOrganizer:
             notify(f"❌ 整理失败: {Path(src).name}\n{e}")
             self.state.mark_failed(src, "link_failed", str(e))
             return {"status": "failed", "reason": "link_failed", "src": src, "error": str(e)}
+
+    def video_files(self, directory: str) -> List[str]:
+        files = []
+        for root, _, names in os.walk(directory):
+            for name in names:
+                path = os.path.join(root, name)
+                if Path(path).suffix.lower() in settings.VIDEO_EXTENSIONS:
+                    files.append(path)
+        return sorted(files)
+
+    def plan_directory(self, directory: str) -> Tuple[List[Tuple[str, Dict, str]], Optional[str]]:
+        plan = []
+        for video in self.video_files(directory):
+            try:
+                size_mb = os.path.getsize(video) / 1024 / 1024
+                if size_mb < settings.MIN_FILE_SIZE_MB:
+                    log.debug(f"目录内文件太小({size_mb:.1f}MB),跳过识别: {video}")
+                    continue
+            except OSError:
+                continue
+
+            info = self.identify(Path(video).name)
+            if not info:
+                return [], video
+            plan.append((video, info, self.build_target_path(video, info)))
+        return plan, None
+
+    def process_directory(self, directory: str):
+        """目录作为一个事件处理:全部视频识别成功才移动,否则整个目录进未识别。"""
+        directory = os.path.abspath(directory)
+        if not os.path.isdir(directory):
+            return {"status": "skipped", "reason": "not_directory", "src": directory}
+
+        plan, failed_video = self.plan_directory(directory)
+        if failed_video:
+            reason_name = f"目录中{Path(failed_video).name}文件未识别到.txt"
+            detail = f"目录中存在未识别视频文件,整个目录未整理:\n{failed_video}\n"
+            if not settings.DRY_RUN:
+                self.write_reason_file(directory, reason_name, detail)
+            dst = self.move_to_unrecognized(directory, "directory_contains_unidentified_video")
+            self.state.mark_failed(directory, "directory_contains_unidentified_video", detail)
+            notify(f"⚠️ 目录未识别: {Path(directory).name}")
+            return {"status": "failed", "reason": "directory_contains_unidentified_video", "src": directory, "dst": dst, "failed_video": failed_video}
+
+        if not plan:
+            log.info(f"目录中没有可处理视频: {directory}")
+            return {"status": "skipped", "reason": "no_video", "src": directory}
+
+        results = []
+        for src, info, dst in plan:
+            try:
+                action = self.transfer_file(src, dst)
+                if action != "dry_run":
+                    self.process_subtitles(src, dst)
+                    if action != "exists":
+                        self.state.mark(src, dst, info)
+                results.append({"src": src, "dst": dst, "status": action})
+            except Exception as e:
+                log.exception(f"目录整理失败: {src}: {e}")
+                self.state.mark_failed(src, "directory_transfer_failed", str(e))
+                return {"status": "failed", "reason": "directory_transfer_failed", "src": directory, "error": str(e)}
+
+        if not settings.DRY_RUN and settings.FILE_ACTION == "move":
+            self.cleanup_empty_dirs(directory)
+        notify(f"✅ 目录整理完成: {Path(directory).name}")
+        return {"status": "ok", "src": directory, "count": len(results), "results": results}
+
+    def cleanup_empty_dirs(self, directory: str):
+        """移动模式下清理源目录剩余空目录。"""
+        for root, dirs, files in os.walk(directory, topdown=False):
+            try:
+                if not dirs and not files:
+                    os.rmdir(root)
+            except OSError:
+                pass
 
     def process_manual(self, src: str, info: Dict):
         """使用人工提供的信息整理文件。"""
