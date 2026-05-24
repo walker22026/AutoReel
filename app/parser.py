@@ -137,6 +137,7 @@ def parse(filename: str) -> ParsedName:
     title = re.sub(r's\d{1,2}e\d{1,3}', ' ', title, flags=re.IGNORECASE)
     title = re.sub(r'\d{1,2}x\d{1,3}', ' ', title)
     title = re.sub(r'第\d+季|第\d+[集话話]|\d+[集话話]|ep?\.?\s*\d+', ' ', title, flags=re.IGNORECASE)
+    title = re.sub(r'[\(\[【]\s*[\)\]】]', ' ', title)
     title = re.sub(r'\s+', ' ', title).strip()
     title = prefer_cjk_title(title)
 
