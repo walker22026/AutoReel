@@ -8,7 +8,7 @@
 输入目录
   ├── 根目录视频文件 -> 单文件识别 -> 成功则整理,失败则移入未识别目录
   ├── 根目录子目录   -> 目录批次识别 -> 全部视频成功才整理,任一失败则整个目录移入未识别目录
-  └── _unrecognized -> 未识别目录,扫描和监听时跳过
+  └── _unrecognized -> 未识别/重复目录,扫描和监听时跳过
 ```
 
 识别流程:
@@ -98,6 +98,7 @@ docker compose down
   "MOVIE_DIR": "/host/emby/电影",
   "TV_DIR": "/host/emby/剧集",
   "UNRECOGNIZED_DIR_NAME": "_unrecognized",
+  "DUPLICATE_DIR_NAME": "_duplicates",
   "TMDB_API_KEY": "",
   "TMDB_LANG": "zh-CN",
   "FILE_ACTION": "move",
@@ -116,6 +117,7 @@ docker compose down
 - `MOVIE_DIR`: 电影输出目录。
 - `TV_DIR`: 剧集输出目录。
 - `UNRECOGNIZED_DIR_NAME`: 未识别目录名。默认会创建在输入目录下,例如 `/host/emby/source/_unrecognized`。
+- `DUPLICATE_DIR_NAME`: 重复文件目录名。默认在未识别目录下创建,例如 `/host/emby/source/_unrecognized/_duplicates`。
 - `TMDB_API_KEY`: TMDB API Key v3。
 - `TMDB_LANG`: TMDB 返回语言,默认 `zh-CN`。
 - `FILE_ACTION`: 文件动作。可选 `move`、`copy`、`hardlink`。
@@ -148,6 +150,13 @@ docker compose down
 /host/emby/source/_unrecognized/Oppenheimer.2023.2160p.BluRay.x265.mkv 未识别到.txt
 ```
 
+如果识别成功但目标文件已经存在,源文件会移入重复目录:
+
+```text
+/host/emby/source/_unrecognized/_duplicates/Oppenheimer.2023.2160p.BluRay.x265.mkv
+/host/emby/source/_unrecognized/_duplicates/Oppenheimer.2023.2160p.BluRay.x265.mkv 目标文件已存在.txt
+```
+
 ### 根目录子目录
 
 输入:
@@ -164,6 +173,7 @@ docker compose down
 - 只识别视频文件。
 - 全部视频识别成功后,才逐个移动到电影/剧集目录。
 - 只要任意一个视频识别失败,整个子目录都不会整理到媒体库,而是移入未识别目录。
+- 只要任意一个视频识别后的目标文件已存在,整个子目录会移入重复目录。
 
 失败时会生成原因文件:
 
@@ -176,6 +186,13 @@ docker compose down
 ```
 
 你可以手工修改目录名或文件名后,把它从 `_unrecognized` 移回输入目录,程序会重新扫描/监听处理。
+
+目录中目标重复时会生成:
+
+```text
+/host/emby/source/_unrecognized/_duplicates/某剧合集/
+  └── 目录中S01E02.mkv目标文件已存在.txt
+```
 
 ## 输出目录结构
 

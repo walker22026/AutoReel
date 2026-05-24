@@ -208,20 +208,28 @@ class MediaOrganizer:
                 except Exception as e:
                     log.warning(f"字幕处理失败 {sub}: {e}")
 
-    def move_to_unrecognized(self, src: str, reason: str) -> str:
-        """把未识别文件或目录移入未识别目录。"""
-        unrecognized_dir = Path(settings.unrecognized_dir)
-        dst = unrecognized_dir / Path(src).name
+    def quarantine(self, src: str, base_dir: str, reason: str) -> str:
+        """把文件或目录移入指定隔离目录。"""
+        quarantine_dir = Path(base_dir)
+        dst = quarantine_dir / Path(src).name
 
         if settings.DRY_RUN:
             log.info(f"[DRY-RUN][unrecognized] {src} -> {dst} ({reason})")
             return str(dst)
 
-        unrecognized_dir.mkdir(parents=True, exist_ok=True)
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
         dst = Path(unique_path(str(dst)))
         shutil.move(src, dst)
-        log.info(f"移入未识别目录: {src} -> {dst}")
+        log.info(f"移入隔离目录: {src} -> {dst}")
         return str(dst)
+
+    def move_to_unrecognized(self, src: str, reason: str) -> str:
+        """把未识别文件或目录移入未识别目录。"""
+        return self.quarantine(src, settings.unrecognized_dir, reason)
+
+    def move_to_duplicates(self, src: str, reason: str) -> str:
+        """把重复文件或目录移入未识别目录下的重复区域。"""
+        return self.quarantine(src, settings.duplicate_dir, reason)
 
     def write_reason_file(self, directory: str, name: str, detail: str):
         if settings.DRY_RUN:
@@ -263,6 +271,14 @@ class MediaOrganizer:
         # 构造目标路径
         dst = self.build_target_path(src, info)
 
+        if os.path.exists(dst):
+            detail = f"目标文件已存在,源文件未整理:\n源文件: {src}\n目标文件: {dst}\n"
+            self.state.mark_failed(src, "duplicate_target_exists", detail)
+            duplicate_dst = self.move_to_duplicates(src, "duplicate_target_exists")
+            self.write_reason_file(Path(duplicate_dst).parent, f"{Path(src).name} 目标文件已存在.txt", detail)
+            notify(f"⚠️ 重复文件: {Path(src).name}")
+            return {"status": "failed", "reason": "duplicate_target_exists", "src": src, "dst": duplicate_dst, "target": dst}
+
         # 执行链接
         try:
             action = self.transfer_file(src, dst)
@@ -291,7 +307,7 @@ class MediaOrganizer:
                     files.append(path)
         return sorted(files)
 
-    def plan_directory(self, directory: str) -> Tuple[List[Tuple[str, Dict, str]], Optional[str]]:
+    def plan_directory(self, directory: str) -> Tuple[List[Tuple[str, Dict, str]], Optional[Dict]]:
         plan = []
         for video in self.video_files(directory):
             try:
@@ -304,8 +320,11 @@ class MediaOrganizer:
 
             info = self.identify(Path(video).name)
             if not info:
-                return [], video
-            plan.append((video, info, self.build_target_path(video, info)))
+                return [], {"reason": "unidentified", "video": video}
+            dst = self.build_target_path(video, info)
+            if os.path.exists(dst):
+                return [], {"reason": "duplicate_target_exists", "video": video, "target": dst}
+            plan.append((video, info, dst))
         return plan, None
 
     def process_directory(self, directory: str):
@@ -314,8 +333,23 @@ class MediaOrganizer:
         if not os.path.isdir(directory):
             return {"status": "skipped", "reason": "not_directory", "src": directory}
 
-        plan, failed_video = self.plan_directory(directory)
-        if failed_video:
+        plan, failure = self.plan_directory(directory)
+        if failure:
+            failed_video = failure["video"]
+            if failure["reason"] == "duplicate_target_exists":
+                reason_name = f"目录中{Path(failed_video).name}目标文件已存在.txt"
+                detail = (
+                    "目录中存在目标文件已存在的视频,整个目录未整理:\n"
+                    f"源文件: {failed_video}\n"
+                    f"目标文件: {failure['target']}\n"
+                )
+                if not settings.DRY_RUN:
+                    self.write_reason_file(directory, reason_name, detail)
+                dst = self.move_to_duplicates(directory, "directory_contains_duplicate_target")
+                self.state.mark_failed(directory, "directory_contains_duplicate_target", detail)
+                notify(f"⚠️ 目录存在重复目标: {Path(directory).name}")
+                return {"status": "failed", "reason": "directory_contains_duplicate_target", "src": directory, "dst": dst, "failed_video": failed_video, "target": failure["target"]}
+
             reason_name = f"目录中{Path(failed_video).name}文件未识别到.txt"
             detail = f"目录中存在未识别视频文件,整个目录未整理:\n{failed_video}\n"
             if not settings.DRY_RUN:

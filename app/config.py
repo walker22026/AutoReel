@@ -48,6 +48,7 @@ class Settings:
     TV_DIR = get_config("TV_DIR", "/host/emby/剧集")
     UNRECOGNIZED_DIR_NAME = get_config("UNRECOGNIZED_DIR_NAME", "_unrecognized")
     UNRECOGNIZED_DIR = get_config("UNRECOGNIZED_DIR", "")
+    DUPLICATE_DIR_NAME = get_config("DUPLICATE_DIR_NAME", "_duplicates")
 
     # TMDB
     TMDB_API_KEY = get_config("TMDB_API_KEY", "")
@@ -90,6 +91,10 @@ class Settings:
         if self.UNRECOGNIZED_DIR:
             return self.UNRECOGNIZED_DIR
         return str(Path(self.WATCH_DIR) / self.UNRECOGNIZED_DIR_NAME)
+
+    @property
+    def duplicate_dir(self) -> str:
+        return str(Path(self.unrecognized_dir) / self.DUPLICATE_DIR_NAME)
 
 
 settings = Settings()

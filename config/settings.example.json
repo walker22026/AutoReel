@@ -3,6 +3,7 @@
   "MOVIE_DIR": "/host/emby/电影",
   "TV_DIR": "/host/emby/剧集",
   "UNRECOGNIZED_DIR_NAME": "_unrecognized",
+  "DUPLICATE_DIR_NAME": "_duplicates",
   "TMDB_API_KEY": "",
   "TMDB_LANG": "zh-CN",
   "FILE_ACTION": "move",
