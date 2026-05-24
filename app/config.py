@@ -1,74 +1,41 @@
-"""配置加载 - 从 JSON 配置文件读取,环境变量仅用于指定配置文件路径。"""
-import json
+"""配置加载 - 从 docker-compose.yml 的 environment 读取。"""
 import os
 from pathlib import Path
 
 
-def load_config(path: str) -> dict:
-    config_path = Path(path)
-    if not config_path.exists():
-        return {}
-    try:
-        with config_path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-CONFIG_FILE = os.getenv("CONFIG_FILE", "/config/settings.json")
-APP_CONFIG = load_config(CONFIG_FILE)
-
-
-def get_config(key: str, default: str = ""):
-    value = APP_CONFIG.get(key)
-    if value not in (None, ""):
-        return value
-    return default
-
-
 def get_bool(key: str, default: bool = False) -> bool:
-    return str(get_config(key, str(default))).lower() in {"1", "true", "yes", "on"}
+    return os.getenv(key, str(default)).lower() in {"1", "true", "yes", "on"}
 
 
 def get_int(key: str, default: int) -> int:
     try:
-        return int(get_config(key, str(default)))
+        return int(os.getenv(key, str(default)))
     except (TypeError, ValueError):
         return default
 
 
 class Settings:
-    CONFIG_FILE = CONFIG_FILE
-    APP_CONFIG = APP_CONFIG
-
     # 路径配置
-    WATCH_DIR = get_config("WATCH_DIR", "/host/emby/source")
-    MOVIE_DIR = get_config("MOVIE_DIR", "/host/emby/电影")
-    TV_DIR = get_config("TV_DIR", "/host/emby/剧集")
-    UNRECOGNIZED_DIR_NAME = get_config("UNRECOGNIZED_DIR_NAME", "_unrecognized")
-    UNRECOGNIZED_DIR = get_config("UNRECOGNIZED_DIR", "")
-    DUPLICATE_DIR_NAME = get_config("DUPLICATE_DIR_NAME", "_duplicates")
+    WATCH_DIR = os.getenv("WATCH_DIR", "/host/emby/source")
+    MOVIE_DIR = os.getenv("MOVIE_DIR", "/host/emby/电影")
+    TV_DIR = os.getenv("TV_DIR", "/host/emby/剧集")
+    UNRECOGNIZED_DIR_NAME = os.getenv("UNRECOGNIZED_DIR_NAME", "_unrecognized")
+    UNRECOGNIZED_DIR = os.getenv("UNRECOGNIZED_DIR", "")
+    DUPLICATE_DIR_NAME = os.getenv("DUPLICATE_DIR_NAME", "_duplicates")
 
     # TMDB
-    TMDB_API_KEY = get_config("TMDB_API_KEY", "")
-    TMDB_LANG = get_config("TMDB_LANG", "zh-CN")
+    TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
+    TMDB_LANG = os.getenv("TMDB_LANG", "zh-CN")
 
     # 行为
     DRY_RUN = get_bool("DRY_RUN", True)
     SCAN_ON_START = get_bool("SCAN_ON_START", True)
     QUIET_SECONDS = get_int("QUIET_SECONDS", 10)
-    # 文件处理模式:
-    # - move: 移动/重命名源文件到媒体库
-    # - hardlink: 保留下载源文件,在媒体库创建硬链接
-    # - copy: 复制一份到媒体库
-    FILE_ACTION = str(get_config("FILE_ACTION", "")).lower().strip()
-    if not FILE_ACTION:
-        FILE_ACTION = "move"
+    FILE_ACTION = os.getenv("FILE_ACTION", "move").lower().strip()
     if FILE_ACTION not in {"move", "hardlink", "copy"}:
         FILE_ACTION = "move"
     USE_HARDLINK = FILE_ACTION == "hardlink"
-    MIN_FILE_SIZE_MB = get_int("MIN_FILE_SIZE_MB", 100)  # 过滤样片
+    MIN_FILE_SIZE_MB = get_int("MIN_FILE_SIZE_MB", 100)
 
     # 视频后缀
     VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".flv", ".rmvb", ".webm"}
@@ -82,9 +49,9 @@ class Settings:
     # 日志
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
-    # 通知 (复用你已有的 Telegram bot)
-    TELEGRAM_BOT_TOKEN = get_config("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHAT_ID = get_config("TELEGRAM_CHAT_ID", "")
+    # 通知
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
     @property
     def unrecognized_dir(self) -> str:

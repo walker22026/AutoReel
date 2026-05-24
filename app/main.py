@@ -1,6 +1,6 @@
 """
 AutoReel - NAS 影视文件自动整理
-- 读取 /config/settings.json
+- 从 docker-compose.yml 的 environment 读取配置
 - 启动后扫描输入目录
 - 持续监听输入目录
 - 根目录单文件: 识别成功后整理,失败移入未识别目录
@@ -128,7 +128,6 @@ def scan_existing(handler: InputHandler):
 
 def main():
     log.info("AutoReel 启动")
-    log.info(f"配置文件: {settings.CONFIG_FILE}")
     log.info(f"输入目录: {settings.WATCH_DIR}")
     log.info(f"电影目录: {settings.MOVIE_DIR}")
     log.info(f"剧集目录: {settings.TV_DIR}")

@@ -21,7 +21,7 @@
   -> move / copy / hardlink
 ```
 
-当前版本不使用 LLM,不提供 Web 配置界面。所有业务参数都写在配置文件中。
+当前版本不使用 LLM,不提供 Web 配置界面。所有配置集中在 `docker-compose.yml` 中。
 
 ## 部署
 
@@ -38,9 +38,9 @@ cd AutoReel
 git pull
 ```
 
-### 2. 配置 Docker 挂载
+### 2. 配置 docker-compose.yml
 
-`docker-compose.yml` 默认挂载:
+所有配置都在 `docker-compose.yml` 中完成。默认挂载:
 
 ```yaml
 volumes:
@@ -66,16 +66,9 @@ volumes:
 剧集目录: /host/emby/剧集
 ```
 
-### 3. 创建配置文件
+然后在 `environment` 中填写 `TMDB_API_KEY` 等参数。TMDB 使用的是 **API 密钥 v3 auth**,不是 v4 Read Access Token。
 
-```bash
-cp config/settings.example.json config/settings.json
-vi config/settings.json
-```
-
-至少填写 `TMDB_API_KEY`。TMDB 使用的是 **API 密钥 v3 auth**,不是 v4 Read Access Token。
-
-### 4. 启动
+### 3. 启动
 
 ```bash
 docker compose up -d --build
@@ -88,27 +81,26 @@ docker compose logs -f
 docker compose down
 ```
 
-## 配置说明
+## docker-compose.yml 配置说明
 
-示例:
+核心配置示例:
 
-```json
-{
-  "WATCH_DIR": "/host/emby/source",
-  "MOVIE_DIR": "/host/emby/电影",
-  "TV_DIR": "/host/emby/剧集",
-  "UNRECOGNIZED_DIR_NAME": "_unrecognized",
-  "DUPLICATE_DIR_NAME": "_duplicates",
-  "TMDB_API_KEY": "",
-  "TMDB_LANG": "zh-CN",
-  "FILE_ACTION": "move",
-  "DRY_RUN": "true",
-  "SCAN_ON_START": "true",
-  "QUIET_SECONDS": "10",
-  "MIN_FILE_SIZE_MB": "100",
-  "TELEGRAM_BOT_TOKEN": "",
-  "TELEGRAM_CHAT_ID": ""
-}
+```yaml
+environment:
+  WATCH_DIR: /host/emby/source
+  MOVIE_DIR: /host/emby/电影
+  TV_DIR: /host/emby/剧集
+  UNRECOGNIZED_DIR_NAME: _unrecognized
+  DUPLICATE_DIR_NAME: _duplicates
+  TMDB_API_KEY: "你的 TMDB API Key"
+  TMDB_LANG: zh-CN
+  FILE_ACTION: move
+  DRY_RUN: "true"
+  SCAN_ON_START: "true"
+  QUIET_SECONDS: "10"
+  MIN_FILE_SIZE_MB: "100"
+  TELEGRAM_BOT_TOKEN: ""
+  TELEGRAM_CHAT_ID: ""
 ```
 
 字段含义:
@@ -230,10 +222,10 @@ docker compose down
 不会写入已处理记录
 ```
 
-确认路径和识别结果无误后,改为:
+确认路径和识别结果无误后,在 `docker-compose.yml` 中改为:
 
-```json
-"DRY_RUN": "false"
+```yaml
+DRY_RUN: "false"
 ```
 
 然后重启容器:

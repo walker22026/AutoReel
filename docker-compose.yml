@@ -4,11 +4,33 @@ services:
     container_name: media-organizer
     restart: unless-stopped
     environment:
-      CONFIG_FILE: /config/settings.json
+      # === 路径配置(容器内路径) ===
+      WATCH_DIR: /host/emby/source
+      MOVIE_DIR: /host/emby/电影
+      TV_DIR: /host/emby/剧集
+      UNRECOGNIZED_DIR_NAME: _unrecognized
+      DUPLICATE_DIR_NAME: _duplicates
+
+      # === TMDB ===
+      # 填 API 密钥 v3 auth,不是 v4 Read Access Token
+      TMDB_API_KEY: ""
+      TMDB_LANG: zh-CN
+
+      # === 行为 ===
+      FILE_ACTION: move       # move=移动/重命名, copy=复制, hardlink=硬链接
+      DRY_RUN: "true"         # 首次建议 true,确认无误后改 false
+      SCAN_ON_START: "true"
+      QUIET_SECONDS: "10"
+      MIN_FILE_SIZE_MB: "100"
+
+      # === Telegram 通知(可选) ===
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_CHAT_ID: ""
+
       LOG_LEVEL: INFO
 
     volumes:
       # 只挂载允许 AutoReel 访问的媒体工作目录
       - /volumeUSB1/usbshare/emby:/host/emby
-      # 配置文件与状态数据库
+      # 状态数据库
       - ./config:/config
