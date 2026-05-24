@@ -1,5 +1,17 @@
 {
+  "WATCH_DIR": "/host/volume1/downloads",
+  "OUTPUT_ROOT": "/host/volume1/media",
+  "MOVIE_DIR_NAME": "Movies",
+  "TV_DIR_NAME": "TV",
+  "TMDB_API_KEY": "",
+  "TMDB_LANG": "zh-CN",
   "LITELLM_BASE": "http://litellm:4000",
   "LITELLM_KEY": "",
-  "LITELLM_MODEL": "gemini-flash"
+  "LITELLM_MODEL": "gemini-flash",
+  "FILE_ACTION": "move",
+  "DRY_RUN": "true",
+  "SCAN_ON_START": "false",
+  "MIN_FILE_SIZE_MB": "100",
+  "TELEGRAM_BOT_TOKEN": "",
+  "TELEGRAM_CHAT_ID": ""
 }

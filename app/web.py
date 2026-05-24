@@ -22,23 +22,36 @@ class AppState:
     def __init__(self):
         self.organizer = MediaOrganizer()
         self.handler = DownloadHandler(self.organizer)
-        self.observer = Observer()
+        self.observer = None
         self.scan_lock = threading.Lock()
         self.scan_running = False
         self.last_scan = None
+        self.watcher_running = False
 
     def start(self):
         if not Path(settings.WATCH_DIR).exists():
             log.warning(f"监控目录不存在, watcher 未启动: {settings.WATCH_DIR}")
+            self.watcher_running = False
             return
+        if self.observer and self.observer.is_alive():
+            return
+        self.observer = Observer()
         self.observer.schedule(self.handler, settings.WATCH_DIR, recursive=True)
         self.observer.start()
+        self.watcher_running = True
         log.info("Web 控制台已启动 watcher")
 
     def stop(self):
-        if self.observer.is_alive():
+        if self.observer and self.observer.is_alive():
             self.observer.stop()
             self.observer.join(timeout=10)
+        self.observer = None
+        self.watcher_running = False
+
+    def restart(self):
+        self.stop()
+        self.handler = DownloadHandler(self.organizer)
+        self.start()
 
     def run_scan(self):
         if not self.scan_lock.acquire(blocking=False):
@@ -111,12 +124,51 @@ def save_config_file(data: dict):
         f.write("\n")
 
 
+def bool_value(value) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def apply_runtime_config(config: dict, restart_watcher: bool = False):
+    settings.WEB_CONFIG = config
+    settings.WATCH_DIR = config.get("WATCH_DIR", settings.WATCH_DIR)
+    settings.OUTPUT_ROOT = config.get("OUTPUT_ROOT", settings.OUTPUT_ROOT)
+    settings.MOVIE_DIR_NAME = config.get("MOVIE_DIR_NAME", settings.MOVIE_DIR_NAME)
+    settings.TV_DIR_NAME = config.get("TV_DIR_NAME", settings.TV_DIR_NAME)
+    settings.TMDB_API_KEY = config.get("TMDB_API_KEY", settings.TMDB_API_KEY)
+    settings.TMDB_LANG = config.get("TMDB_LANG", settings.TMDB_LANG)
+    settings.LITELLM_BASE = config.get("LITELLM_BASE", settings.LITELLM_BASE)
+    settings.LITELLM_MODEL = config.get("LITELLM_MODEL", settings.LITELLM_MODEL)
+    settings.LITELLM_KEY = config.get("LITELLM_KEY", settings.LITELLM_KEY)
+    settings.DRY_RUN = bool_value(config.get("DRY_RUN", settings.DRY_RUN))
+    settings.SCAN_ON_START = bool_value(config.get("SCAN_ON_START", settings.SCAN_ON_START))
+    settings.FILE_ACTION = (config.get("FILE_ACTION") or "move").lower()
+    if settings.FILE_ACTION not in {"move", "hardlink", "copy"}:
+        settings.FILE_ACTION = "move"
+    settings.USE_HARDLINK = settings.FILE_ACTION == "hardlink"
+    settings.MIN_FILE_SIZE_MB = int(config.get("MIN_FILE_SIZE_MB") or settings.MIN_FILE_SIZE_MB or 100)
+    settings.TELEGRAM_BOT_TOKEN = config.get("TELEGRAM_BOT_TOKEN", settings.TELEGRAM_BOT_TOKEN)
+    settings.TELEGRAM_CHAT_ID = config.get("TELEGRAM_CHAT_ID", settings.TELEGRAM_CHAT_ID)
+
+    state.organizer.tmdb.configure(settings.TMDB_API_KEY, settings.TMDB_LANG)
+    state.organizer.llm.configure(settings.LITELLM_BASE, settings.LITELLM_KEY, settings.LITELLM_MODEL)
+    if restart_watcher:
+        state.restart()
+
+
 def mask_secret(value: str) -> str:
     if not value:
         return "未配置"
     if len(value) <= 8:
         return "********"
     return f"{value[:4]}...{value[-4:]}"
+
+
+def selected(current, value) -> str:
+    return " selected" if str(current) == str(value) else ""
+
+
+def checked(value) -> str:
+    return " checked" if bool(value) else ""
 
 
 async def form_data(request: Request) -> dict:
@@ -188,6 +240,13 @@ def page(content: str) -> HTMLResponse:
     select {{ min-width: 130px; flex: 0 0 130px; }}
     .compact input {{ min-width: 120px; flex: 1 1 120px; }}
     .compact input[name="src"], .compact input[name="title"] {{ min-width: min(320px, 100%); flex: 2 1 260px; }}
+    .settings-form {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }}
+    .field {{ display: flex; flex-direction: column; gap: 5px; min-width: 0; }}
+    .field label {{ color: var(--muted); font-size: 12px; }}
+    .field input, .field select {{ min-width: 0; width: 100%; flex: none; }}
+    .checks {{ display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }}
+    .checks label {{ display: flex; gap: 7px; align-items: center; color: var(--text); }}
+    .checks input {{ min-width: 0; width: auto; flex: none; }}
     button, .button {{
       border: 0;
       border-radius: 6px;
@@ -212,6 +271,7 @@ def page(content: str) -> HTMLResponse:
     @media (max-width: 760px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: 1fr; }}
+      .settings-form {{ grid-template-columns: 1fr; }}
       dl {{ grid-template-columns: 1fr; }}
       input {{ min-width: 100%; }}
     }}
@@ -258,7 +318,7 @@ async def index():
   <div class="panel">
     <h2>运行状态</h2>
     <dl>
-      <dt>Watcher</dt><dd class="ok">运行中</dd>
+      <dt>Watcher</dt><dd class="{'ok' if state.watcher_running else 'danger'}">{'运行中' if state.watcher_running else '未启动'}</dd>
       <dt>扫描状态</dt><dd>{'扫描中' if state.scan_running else '空闲'}</dd>
       <dt>最近扫描</dt><dd>{esc(state.last_scan or '尚无')}</dd>
       <dt>待处理队列</dt><dd>{len(state.handler.pending)}</dd>
@@ -289,6 +349,30 @@ async def index():
     <form method="post" action="/process">
       <input name="path" placeholder="/downloads/example.mkv">
       <button type="submit">处理</button>
+    </form>
+  </div>
+  <div class="panel full">
+    <h2>基础配置</h2>
+    <form class="settings-form" method="post" action="/config/basic">
+      <div class="field"><label>监控目录</label><input name="watch_dir" value="{esc(settings.WATCH_DIR)}" placeholder="/host/volume1/downloads"></div>
+      <div class="field"><label>输出根目录</label><input name="output_root" value="{esc(settings.OUTPUT_ROOT)}" placeholder="/host/volume1/media"></div>
+      <div class="field"><label>电影目录名</label><input name="movie_dir_name" value="{esc(settings.MOVIE_DIR_NAME)}"></div>
+      <div class="field"><label>剧集目录名</label><input name="tv_dir_name" value="{esc(settings.TV_DIR_NAME)}"></div>
+      <div class="field"><label>TMDB API Key</label><input name="tmdb_api_key" type="password" placeholder="留空则保持不变"></div>
+      <div class="field"><label>TMDB 语言</label><input name="tmdb_lang" value="{esc(settings.TMDB_LANG)}"></div>
+      <div class="field"><label>文件动作</label><select name="file_action">
+        <option value="move"{selected(settings.FILE_ACTION, 'move')}>移动/重命名</option>
+        <option value="hardlink"{selected(settings.FILE_ACTION, 'hardlink')}>硬链接</option>
+        <option value="copy"{selected(settings.FILE_ACTION, 'copy')}>复制</option>
+      </select></div>
+      <div class="field"><label>最小文件 MB</label><input name="min_file_size_mb" value="{esc(settings.MIN_FILE_SIZE_MB)}"></div>
+      <div class="field"><label>Telegram Bot Token</label><input name="telegram_bot_token" type="password" placeholder="留空则保持不变"></div>
+      <div class="field"><label>Telegram Chat ID</label><input name="telegram_chat_id" value="{esc(settings.TELEGRAM_CHAT_ID)}"></div>
+      <div class="field checks">
+        <label><input type="checkbox" name="dry_run"{checked(settings.DRY_RUN)}> Dry Run</label>
+        <label><input type="checkbox" name="scan_on_start"{checked(settings.SCAN_ON_START)}> 启动时扫描</label>
+      </div>
+      <div class="field"><button type="submit">保存并重启监听</button></div>
     </form>
   </div>
   <div class="panel full">
@@ -372,12 +456,7 @@ async def save_llm_config(request: Request):
         config["LITELLM_KEY"] = settings.LITELLM_KEY
 
     save_config_file(config)
-
-    settings.WEB_CONFIG = config
-    settings.LITELLM_BASE = config.get("LITELLM_BASE", "")
-    settings.LITELLM_MODEL = config.get("LITELLM_MODEL", "")
-    settings.LITELLM_KEY = config.get("LITELLM_KEY", "")
-    state.organizer.llm.configure(settings.LITELLM_BASE, settings.LITELLM_KEY, settings.LITELLM_MODEL)
+    apply_runtime_config(config)
 
     return page(f"""
 <section class="panel">
@@ -388,6 +467,53 @@ async def save_llm_config(request: Request):
     <dt>模型</dt><dd>{esc(settings.LITELLM_MODEL)}</dd>
     <dt>API Key</dt><dd>{esc(mask_secret(settings.LITELLM_KEY))}</dd>
     <dt>状态</dt><dd>{'启用' if state.organizer.llm.enabled else '未启用'}</dd>
+  </dl>
+  <p><a class="button" href="/">返回</a></p>
+</section>
+""")
+
+
+@app.post("/config/basic", response_class=HTMLResponse)
+async def save_basic_config(request: Request):
+    data = await form_data(request)
+    config = load_config_file()
+
+    config["WATCH_DIR"] = data.get("watch_dir", "").strip()
+    config["OUTPUT_ROOT"] = data.get("output_root", "").strip()
+    config["MOVIE_DIR_NAME"] = data.get("movie_dir_name", "").strip() or "Movies"
+    config["TV_DIR_NAME"] = data.get("tv_dir_name", "").strip() or "TV"
+    config["TMDB_LANG"] = data.get("tmdb_lang", "").strip() or "zh-CN"
+    config["FILE_ACTION"] = data.get("file_action", "move")
+    config["MIN_FILE_SIZE_MB"] = data.get("min_file_size_mb", "").strip() or "100"
+    config["DRY_RUN"] = "true" if data.get("dry_run") else "false"
+    config["SCAN_ON_START"] = "true" if data.get("scan_on_start") else "false"
+    config["TELEGRAM_CHAT_ID"] = data.get("telegram_chat_id", "").strip()
+
+    tmdb_key = data.get("tmdb_api_key", "").strip()
+    telegram_token = data.get("telegram_bot_token", "").strip()
+    if tmdb_key:
+        config["TMDB_API_KEY"] = tmdb_key
+    elif "TMDB_API_KEY" not in config:
+        config["TMDB_API_KEY"] = settings.TMDB_API_KEY
+    if telegram_token:
+        config["TELEGRAM_BOT_TOKEN"] = telegram_token
+    elif "TELEGRAM_BOT_TOKEN" not in config:
+        config["TELEGRAM_BOT_TOKEN"] = settings.TELEGRAM_BOT_TOKEN
+
+    save_config_file(config)
+    apply_runtime_config(config, restart_watcher=True)
+
+    return page(f"""
+<section class="panel">
+  <h2>基础配置已保存</h2>
+  <dl>
+    <dt>配置文件</dt><dd><code>{esc(settings.CONFIG_FILE)}</code></dd>
+    <dt>监控目录</dt><dd><code>{esc(settings.WATCH_DIR)}</code></dd>
+    <dt>输出根目录</dt><dd><code>{esc(settings.OUTPUT_ROOT)}</code></dd>
+    <dt>TMDB Key</dt><dd>{esc(mask_secret(settings.TMDB_API_KEY))}</dd>
+    <dt>文件动作</dt><dd>{esc(settings.FILE_ACTION)}</dd>
+    <dt>Dry Run</dt><dd>{esc(settings.DRY_RUN)}</dd>
+    <dt>Watcher</dt><dd>{'运行中' if state.watcher_running else '未启动,请检查监控目录是否存在或已挂载'}</dd>
   </dl>
   <p><a class="button" href="/">返回</a></p>
 </section>

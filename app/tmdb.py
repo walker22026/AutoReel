@@ -11,9 +11,12 @@ BASE = "https://api.themoviedb.org/3"
 
 class TMDBClient:
     def __init__(self):
-        self.key = settings.TMDB_API_KEY
-        self.lang = settings.TMDB_LANG
         self.session = requests.Session()
+        self.configure(settings.TMDB_API_KEY, settings.TMDB_LANG)
+
+    def configure(self, key: str, lang: str):
+        self.key = key or ""
+        self.lang = lang or "zh-CN"
 
     def _get(self, path: str, **params) -> Optional[dict]:
         params["api_key"] = self.key

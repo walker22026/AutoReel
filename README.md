@@ -42,25 +42,22 @@
 ### 1. 准备 TMDB API Key
 免费申请: https://www.themoviedb.org/settings/api
 
-### 2. 配置
-```bash
-cp .env.example .env
-vim .env  # 填入 TMDB_API_KEY,Telegram 可选
+### 2. 检查挂载目录
+默认 `docker-compose.yml` 挂载群晖常见目录:
+
+```yaml
+- /volume1:/host/volume1
 ```
 
-### 3. 修改 docker-compose.yml
-重点检查 `volumes` 段:
-- `WATCH_DIR` 必须挂载你 NAS 上的下载目录(qBittorrent 下载目标)
-- 默认 `FILE_ACTION=move`,会把下载目录里的源文件移动/重命名到媒体库
-- 如果改用 `FILE_ACTION=hardlink`, `OUTPUT_ROOT` 必须与下载目录**在同一个 volume**,否则硬链接会失败降级为复制
+如果你的 NAS 不是这个路径,只需要改这一处挂载。例如 QNAP/Unraid 可以改成自己的数据根目录。业务配置不需要改 compose,后续都在 Web 页面完成。
 
-### 4. 启动
+### 3. 启动
 ```bash
-docker compose up -d
+docker compose up -d --build
 docker compose logs -f
 ```
 
-### 5. 打开 Web 控制台
+### 4. 打开 Web 控制台
 浏览器访问:
 
 ```text
@@ -68,6 +65,7 @@ http://NAS-IP:8000
 ```
 
 控制台支持:
+- 配置下载目录、媒体库目录、TMDB、LLM、整理策略、Telegram
 - 查看 watcher、扫描、Dry Run、文件处理模式
 - 手动扫描监控目录
 - 手动处理单个文件
@@ -75,8 +73,8 @@ http://NAS-IP:8000
 - 测试文件名解析规则
 - 查看最近整理记录
 
-### 6. 首次运行
-建议先 `DRY_RUN=true` 跑一次扫存量,看日志确认识别和目标路径正确,再切回 `false`。
+### 5. 首次运行
+首次启动默认 `DRY_RUN=true`,建议先在 Web 页面完成配置并测试一次扫描,确认识别和目标路径正确,再把 Dry Run 关闭。
 
 ## 输出目录结构
 
@@ -106,32 +104,45 @@ Emby/Jellyfin/Plex 对这种格式刮削率接近 100%。
 
 ## 文件处理模式
 
-通过 `FILE_ACTION` 控制整理动作:
+在 Web 控制台通过 `FILE_ACTION` 控制整理动作:
 
 - `move`: 默认值。直接移动/重命名源文件到媒体库目标路径。适合不需要继续做种的下载目录。
 - `hardlink`: 保留下载源文件,在媒体库创建硬链接。适合 PT 做种,且不额外占空间。
 - `copy`: 复制一份到媒体库。最安全,但会占双倍空间。
 
-使用 `move` 时,`/downloads` 不能只读挂载,否则容器无法移动源文件。
+使用 `move` 时,下载目录对应的宿主机挂载不能只读,否则容器无法移动源文件。
 
 ## LLM 配置
 
-LLM 通过 LiteLLM 兼容 OpenAI Chat Completions 接口调用。配置位置是 Web 配置文件,默认路径为 `/config/settings.json`,也就是 compose 挂载的 `./config/settings.json`。
+所有业务配置都写入 Web 配置文件,默认路径为 `/config/settings.json`,也就是 compose 挂载的 `./config/settings.json`。LLM 通过 LiteLLM 兼容 OpenAI Chat Completions 接口调用。
 
 推荐直接在 Web 控制台填写并保存:
+- 下载目录和媒体库目录,例如 `/host/volume1/downloads`、`/host/volume1/media`
+- TMDB API Key
 - LiteLLM 地址
 - API Key
 - 模型名称
+- 文件处理模式、Dry Run、最小文件大小、Telegram
 
-保存后会立即写入配置文件,并刷新当前运行中的 LLM 客户端。
+保存后会立即写入配置文件,刷新 TMDB/LLM 客户端,并重启目录监听。
 
 配置文件格式如下:
 
 ```json
 {
+  "WATCH_DIR": "/host/volume1/downloads",
+  "OUTPUT_ROOT": "/host/volume1/media",
+  "MOVIE_DIR_NAME": "Movies",
+  "TV_DIR_NAME": "TV",
+  "TMDB_API_KEY": "你的 TMDB API Key",
+  "TMDB_LANG": "zh-CN",
   "LITELLM_BASE": "http://litellm:4000",
   "LITELLM_KEY": "你的 LiteLLM API Key",
-  "LITELLM_MODEL": "gemini-flash"
+  "LITELLM_MODEL": "gemini-flash",
+  "FILE_ACTION": "move",
+  "DRY_RUN": "true",
+  "SCAN_ON_START": "false",
+  "MIN_FILE_SIZE_MB": "100"
 }
 ```
 
@@ -152,4 +163,4 @@ LLM 通过 LiteLLM 兼容 OpenAI Chat Completions 接口调用。配置位置是
 - 跨设备硬链接会自动降级为复制,占双倍空间。使用 `hardlink` 时务必保证下载目录和媒体库目录在同一文件系统。
 - 合集/纪录片(多 part)、原盘 ISO 当前未特殊处理。
 - 字幕语言识别简单(直接保留后缀),没做语言代码标准化。
-- Web 控制台中的 LLM 配置保存后会立即生效;其他环境变量配置修改后仍需要重启容器。
+- Docker 只能访问已经挂载进容器的宿主机目录;如果 Web 中填写的路径不在挂载范围内,watcher 无法启动。

@@ -32,14 +32,14 @@ class Settings:
     WEB_CONFIG = WEB_CONFIG
 
     # 路径配置
-    WATCH_DIR = os.getenv("WATCH_DIR", "/downloads")
-    OUTPUT_ROOT = os.getenv("OUTPUT_ROOT", "/media")
-    MOVIE_DIR_NAME = os.getenv("MOVIE_DIR_NAME", "Movies")
-    TV_DIR_NAME = os.getenv("TV_DIR_NAME", "TV")
+    WATCH_DIR = get_config("WATCH_DIR", "/host/volume1/downloads")
+    OUTPUT_ROOT = get_config("OUTPUT_ROOT", "/host/volume1/media")
+    MOVIE_DIR_NAME = get_config("MOVIE_DIR_NAME", "Movies")
+    TV_DIR_NAME = get_config("TV_DIR_NAME", "TV")
 
     # TMDB
-    TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
-    TMDB_LANG = os.getenv("TMDB_LANG", "zh-CN")
+    TMDB_API_KEY = get_config("TMDB_API_KEY", "")
+    TMDB_LANG = get_config("TMDB_LANG", "zh-CN")
 
     # LLM (LiteLLM gateway). Web 配置文件优先,环境变量兜底。
     LITELLM_BASE = get_config("LITELLM_BASE", "http://litellm:4000")
@@ -47,19 +47,19 @@ class Settings:
     LITELLM_MODEL = get_config("LITELLM_MODEL", "gemini-flash")
 
     # 行为
-    DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
-    SCAN_ON_START = os.getenv("SCAN_ON_START", "true").lower() == "true"
+    DRY_RUN = str(get_config("DRY_RUN", "true")).lower() == "true"
+    SCAN_ON_START = str(get_config("SCAN_ON_START", "false")).lower() == "true"
     # 文件处理模式:
     # - move: 移动/重命名源文件到媒体库
     # - hardlink: 保留下载源文件,在媒体库创建硬链接
     # - copy: 复制一份到媒体库
-    FILE_ACTION = os.getenv("FILE_ACTION", "").lower().strip()
+    FILE_ACTION = str(get_config("FILE_ACTION", "")).lower().strip()
     if not FILE_ACTION:
-        FILE_ACTION = "hardlink" if os.getenv("USE_HARDLINK", "true").lower() == "true" else "copy"
+        FILE_ACTION = os.getenv("FILE_ACTION", "move").lower().strip()
     if FILE_ACTION not in {"move", "hardlink", "copy"}:
-        FILE_ACTION = "hardlink"
+        FILE_ACTION = "move"
     USE_HARDLINK = FILE_ACTION == "hardlink"
-    MIN_FILE_SIZE_MB = int(os.getenv("MIN_FILE_SIZE_MB", "100"))  # 过滤样片
+    MIN_FILE_SIZE_MB = int(get_config("MIN_FILE_SIZE_MB", "100"))  # 过滤样片
 
     # 视频后缀
     VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".flv", ".rmvb", ".webm"}
@@ -74,8 +74,8 @@ class Settings:
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
     # 通知 (复用你已有的 Telegram bot)
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+    TELEGRAM_BOT_TOKEN = get_config("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = get_config("TELEGRAM_CHAT_ID", "")
 
 
 settings = Settings()
