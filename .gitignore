@@ -1,0 +1,15 @@
+.env
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+
+__pycache__/
+*.py[cod]
+
+config/state.db
+config/settings.json
+
+.DS_Store
+.venv/
+venv/

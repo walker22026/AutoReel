@@ -1,0 +1,49 @@
+services:
+  media-organizer:
+    build: .
+    container_name: media-organizer
+    restart: unless-stopped
+    environment:
+      # === 路径(容器内) ===
+      WATCH_DIR: /downloads
+      OUTPUT_ROOT: /media
+      MOVIE_DIR_NAME: Movies
+      TV_DIR_NAME: TV
+
+      # === TMDB ===
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      TMDB_LANG: zh-CN
+
+      # === LiteLLM(指向你现有的 gateway) ===
+      CONFIG_FILE: /config/settings.json
+
+      # === 行为 ===
+      DRY_RUN: "false"       # 调试时设 true,只打日志不动文件
+      SCAN_ON_START: "true"  # 启动时扫描存量
+      FILE_ACTION: move      # move=移动/重命名源文件, hardlink=硬链接, copy=复制
+      MIN_FILE_SIZE_MB: "100"
+
+      # === Telegram 通知(可选) ===
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+
+      LOG_LEVEL: INFO
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      # NAS 上的下载目录(move 模式需要读写权限)
+      - /volume1/downloads:/downloads
+      # NAS 上的媒体库目录
+      - /volume1/media:/media
+      # 状态数据库
+      - ./config:/config
+
+    # 如果你的 LiteLLM 容器在同一个 docker network,加上:
+    # networks:
+    #   - litellm_net
+
+# networks:
+#   litellm_net:
+#     external: true

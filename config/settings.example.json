@@ -1,0 +1,5 @@
+{
+  "LITELLM_BASE": "http://litellm:4000",
+  "LITELLM_KEY": "",
+  "LITELLM_MODEL": "gemini-flash"
+}
