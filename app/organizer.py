@@ -40,6 +40,38 @@ def unique_path(path: str) -> str:
     raise FileExistsError(f"无法生成唯一目标路径: {path}")
 
 
+def extract_episode_from_filename(path: str) -> Tuple[Optional[int], Optional[int]]:
+    """在剧集目录上下文中,从文件名提取季集号。"""
+    parsed = pname.parse(Path(path).name)
+    season = parsed.season
+    episode = parsed.episode
+    if episode is not None:
+        return season, episode
+
+    stem = Path(path).stem
+    # 常见网盘剧集命名: 01 4K.mp4 / 01.mp4 / 第01集.mp4
+    m = re.search(r'(?:^|[\s._\-\[【(])(?:第)?0*(\d{1,3})(?:集|话|話)?(?:[\s._\-\]】)]|$)', stem)
+    if m:
+        value = int(m.group(1))
+        if 1 <= value <= 200:
+            return season, value
+    return season, None
+
+
+def is_episode_style_filename(path: str) -> bool:
+    """判断文件名是否像剧集编号,而不是完整片名。"""
+    stem = Path(path).stem.strip()
+    compact = re.sub(r'(?i)\b(4k|8k|2160p|1080p|720p|uhd|hdr|hevc|x26[45]|h\.?26[45]|aac|ddp?\d?\.?\d?)\b', '', stem)
+    compact = re.sub(r'[\s._\-\[\]【】()（）]+', '', compact)
+    return bool(re.fullmatch(r'(?:s\d{1,2}e\d{1,3}|(?:第)?\d{1,3}(?:集|话|話)?)', compact, re.I))
+
+
+def is_likely_tv_batch(videos: List[str]) -> bool:
+    if len(videos) < 2:
+        return False
+    return all(is_episode_style_filename(video) for video in videos)
+
+
 class StateDB:
     """记录已处理文件,避免重复 + 提供历史查询"""
     def __init__(self, path: str):
@@ -135,13 +167,13 @@ class MediaOrganizer:
         log.warning(f"无法识别: {filename}")
         return None
 
-    def identify_dir(self, dirname: str) -> Optional[Dict]:
+    def identify_dir(self, dirname: str, force_tv: bool = False) -> Optional[Dict]:
         """使用目录名识别媒体信息（目录批次专用）。"""
         parsed = pname.parse(dirname)
         log.debug(f"目录名规则解析: {parsed}")
 
         if parsed.title:
-            result = self.tmdb.identify(parsed.title, parsed.year, parsed.is_tv)
+            result = self.tmdb.identify(parsed.title, parsed.year, parsed.is_tv or force_tv)
             if result:
                 result["season"] = parsed.season
                 result["episode"] = parsed.episode
@@ -153,7 +185,7 @@ class MediaOrganizer:
 
     def build_target_path(self, src: str, info: Dict, keep_name: bool = False) -> str:
         """根据 TMDB 信息构造目标路径。
-        keep_name=True 时剧集保留原始文件名（目录批次模式）。
+        keep_name=True 仅用于兼容旧调用；默认按媒体库规范重命名。
         """
         ext = Path(src).suffix
         title = safe_name(info["title"])
@@ -170,11 +202,8 @@ class MediaOrganizer:
             season = info.get("season") or 1
             episode = info.get("episode") or 0
             season_dir = f"Season {season:02d}"
-            if keep_name:
-                filename = Path(src).name
-            else:
-                ep_str = f"S{season:02d}E{episode:02d}" if episode else f"S{season:02d}"
-                filename = f"{title} - {ep_str}{ext}"
+            ep_str = f"S{season:02d}E{episode:02d}" if episode else f"S{season:02d}"
+            filename = Path(src).name if keep_name else f"{title} - {ep_str}{ext}"
             return os.path.join(settings.TV_DIR, folder, season_dir, filename)
 
     def _target_show_root(self, info: Dict) -> str:
@@ -352,15 +381,22 @@ class MediaOrganizer:
 
     def plan_directory(self, directory: str) -> Tuple[List[Tuple[str, Dict, str]], Optional[Dict]]:
         dir_path = Path(directory)
+        videos = self.video_files(directory)
 
-        # 优先用目录名识别媒体标题，文件名仅用于提取季集号
-        dir_info = self.identify_dir(dir_path.name)
-        if not dir_info:
-            return [], {"reason": "unidentified_directory", "path": directory}
+        force_tv = is_likely_tv_batch(videos)
+        dir_info = self.identify_dir(dir_path.name, force_tv=force_tv)
+        if dir_info and dir_info["type"] == "tv":
+            return self.plan_tv_directory(directory, dir_info, videos)
+        if dir_info and dir_info["type"] == "movie" and len(videos) == 1:
+            dst = self.build_target_path(videos[0], dir_info)
+            if os.path.exists(dst):
+                return [], {"reason": "duplicate_target_exists", "video": videos[0], "target": dst}
+            return [(videos[0], dir_info, dst)], None
 
-        is_tv = dir_info["type"] == "tv"
+        # 电影合集或目录名无法识别时,逐个视频文件识别。全部成功才整理。
         plan = []
-        for video in self.video_files(directory):
+        seen_targets = {}
+        for video in videos:
             try:
                 size_mb = os.path.getsize(video) / 1024 / 1024
                 if size_mb < settings.MIN_FILE_SIZE_MB:
@@ -369,19 +405,43 @@ class MediaOrganizer:
             except OSError:
                 continue
 
-            info = dict(dir_info)
-            if is_tv:
-                # 从文件名提取季集号，覆盖目录解析结果
-                parsed = pname.parse(Path(video).name)
-                if parsed.season is not None:
-                    info["season"] = parsed.season
-                if parsed.episode is not None:
-                    info["episode"] = parsed.episode
-
-            # 剧集保留原始文件名；电影使用标准命名
-            dst = self.build_target_path(video, info, keep_name=is_tv)
+            info = self.identify(Path(video).name)
+            if not info:
+                return [], {"reason": "unidentified_video", "video": video}
+            dst = self.build_target_path(video, info)
             if os.path.exists(dst):
                 return [], {"reason": "duplicate_target_exists", "video": video, "target": dst}
+            if dst in seen_targets:
+                return [], {"reason": "duplicate_target_in_batch", "video": video, "target": dst, "other": seen_targets[dst]}
+            seen_targets[dst] = video
+            plan.append((video, info, dst))
+        return plan, None
+
+    def plan_tv_directory(self, directory: str, dir_info: Dict, videos: List[str]) -> Tuple[List[Tuple[str, Dict, str]], Optional[Dict]]:
+        plan = []
+        seen_targets = {}
+        for video in videos:
+            try:
+                size_mb = os.path.getsize(video) / 1024 / 1024
+                if size_mb < settings.MIN_FILE_SIZE_MB:
+                    log.debug(f"目录内文件太小({size_mb:.1f}MB),跳过识别: {video}")
+                    continue
+            except OSError:
+                continue
+
+            season, episode = extract_episode_from_filename(video)
+            if episode is None:
+                return [], {"reason": "episode_unidentified", "video": video}
+
+            info = dict(dir_info)
+            info["season"] = season or dir_info.get("season") or 1
+            info["episode"] = episode
+            dst = self.build_target_path(video, info, keep_name=False)
+            if os.path.exists(dst):
+                return [], {"reason": "duplicate_target_exists", "video": video, "target": dst}
+            if dst in seen_targets:
+                return [], {"reason": "duplicate_target_in_batch", "video": video, "target": dst, "other": seen_targets[dst]}
+            seen_targets[dst] = video
             plan.append((video, info, dst))
         return plan, None
 
@@ -393,14 +453,16 @@ class MediaOrganizer:
 
         plan, failure = self.plan_directory(directory)
         if failure:
-            if failure["reason"] == "duplicate_target_exists":
+            if failure["reason"] in {"duplicate_target_exists", "duplicate_target_in_batch"}:
                 failed_video = failure["video"]
                 reason_name = f"目录中{Path(failed_video).name}目标文件已存在.txt"
                 detail = (
-                    "目录中存在目标文件已存在的视频,整个目录未整理:\n"
+                    "目录中存在重复目标文件,整个目录未整理:\n"
                     f"源文件: {failed_video}\n"
                     f"目标文件: {failure['target']}\n"
                 )
+                if failure.get("other"):
+                    detail += f"同批次另一源文件: {failure['other']}\n"
                 if not settings.DRY_RUN:
                     self.write_reason_file(directory, reason_name, detail)
                 dst = self.move_to_duplicates(directory, "directory_contains_duplicate_target")
@@ -408,15 +470,19 @@ class MediaOrganizer:
                 notify(f"⚠️ 目录存在重复目标: {Path(directory).name}")
                 return {"status": "failed", "reason": "directory_contains_duplicate_target", "src": directory, "dst": dst}
 
-            # unidentified_directory: 目录名无法识别
-            dir_name = Path(directory).name
-            reason_name = f"目录{dir_name}无法识别.txt"
-            detail = f"目录名无法识别,整个目录未整理:\n{directory}\n"
+            failed_video = failure.get("video")
+            if failed_video:
+                reason_name = f"目录中{Path(failed_video).name}文件未识别到.txt"
+                detail = f"目录中存在无法识别的视频文件,整个目录未整理:\n{failed_video}\n原因: {failure['reason']}\n"
+            else:
+                dir_name = Path(directory).name
+                reason_name = f"目录{dir_name}无法识别.txt"
+                detail = f"目录名无法识别,整个目录未整理:\n{directory}\n"
             if not settings.DRY_RUN:
                 self.write_reason_file(directory, reason_name, detail)
             dst = self.move_to_unrecognized(directory, "directory_unidentified")
             self.state.mark_failed(directory, "directory_unidentified", detail)
-            notify(f"⚠️ 目录未识别: {dir_name}")
+            notify(f"⚠️ 目录未识别: {Path(directory).name}")
             return {"status": "failed", "reason": "directory_unidentified", "src": directory, "dst": dst}
 
         if not plan:

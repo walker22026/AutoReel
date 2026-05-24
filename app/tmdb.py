@@ -5,7 +5,6 @@ import requests
 from pathlib import Path
 from typing import Optional, List, Dict
 from config import settings
-import llm as llm_mod
 
 log = logging.getLogger("tmdb")
 
@@ -66,7 +65,7 @@ class TMDBClient:
         if not results:
             return None
 
-        # 有年份就优先匹配
+        # 有年份时必须匹配年份或 ±1 年容差,避免把同名但年份很远的作品误命中。
         if year:
             date_field = "release_date" if media_type == "movie" else "first_air_date"
             for r in results:
@@ -78,6 +77,7 @@ class TMDBClient:
                 d = r.get(date_field, "")[:4]
                 if d.isdigit() and abs(int(d) - year) <= 1:
                     return r
+            return None
 
         # 否则取 popularity 最高的(TMDB 默认已按相关性排序)
         return results[0]
@@ -124,7 +124,7 @@ class TMDBClient:
         return None
 
     def identify(self, title: str, year: Optional[int] = None, is_tv: bool = False) -> Optional[Dict]:
-        """识别一个标题。优先级：别名表 > TMDB 直接搜索 > LLM 候选词重试。"""
+        """识别一个标题。优先级：别名表 > TMDB 直接搜索。"""
         if not title:
             return None
 
@@ -138,19 +138,4 @@ class TMDBClient:
             log.warning(f"别名表映射 '{alias}' 在 TMDB 仍未找到，继续正常流程")
 
         # 第二步：直接搜索原始标题
-        result = self._search_one(title, year, is_tv)
-        if result:
-            return result
-
-        # 第三步：LLM 兜底（需配置 LLM_API_URL，对训练数据外的冷门剧效果有限）
-        candidates = llm_mod.suggest_titles(title)
-        for candidate in candidates:
-            if candidate.strip().lower() == title.strip().lower():
-                continue
-            log.info(f"LLM 候选词重试: '{title}' -> '{candidate}'")
-            result = self._search_one(candidate, year, is_tv)
-            if result:
-                log.info(f"LLM 候选词命中: '{candidate}' -> {result['title']} ({result['year']})")
-                return result
-
-        return None
+        return self._search_one(title, year, is_tv)
