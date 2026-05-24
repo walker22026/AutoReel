@@ -149,6 +149,8 @@ environment:
 /host/emby/source/_unrecognized/_duplicates/Oppenheimer.2023.2160p.BluRay.x265.mkv 目标文件已存在.txt
 ```
 
+如果源文件曾经被状态库记录为已处理,但它仍然出现在输入目录中,程序也会重新检查。只要目标文件已存在,仍会按重复文件处理,不会静默跳过。
+
 ### 根目录子目录
 
 输入:

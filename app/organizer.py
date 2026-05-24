@@ -242,10 +242,10 @@ class MediaOrganizer:
         """处理单个文件 - 主入口"""
         src = os.path.abspath(src)
 
-        # 跳过已处理
+        # 即使状态库记录过,只要源文件仍在输入目录,也要重新决策。
+        # 这样重复文件会进入重复目录,不会静默留在输入目录反复扫描。
         if self.state.is_done(src):
-            log.debug(f"已处理过,跳过: {src}")
-            return {"status": "skipped", "reason": "already_processed", "src": src}
+            log.info(f"源文件已有处理记录但仍存在,重新检查是否重复: {src}")
 
         # 跳过小文件(样片、海报)
         try:
