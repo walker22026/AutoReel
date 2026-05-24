@@ -48,12 +48,21 @@ class Settings:
     # 状态记录
     STATE_DB = os.getenv("STATE_DB", "/config/state.db")
 
+    # 别名表（用户自定义，TMDB 搜不到时优先使用）
+    ALIASES_FILE = os.getenv("ALIASES_FILE", "/config/aliases.json")
+
     # 日志
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
     # 通知
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    # LLM 兜底（可选）
+    LLM_API_URL = os.getenv("LLM_API_URL", "")          # OpenAI 兼容接口，空则禁用
+    LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+    LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    LLM_TIMEOUT = get_int("LLM_TIMEOUT", 15)            # 单次请求超时秒数
 
     @property
     def unrecognized_dir(self) -> str:

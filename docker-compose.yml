@@ -24,6 +24,13 @@ services:
       QUIET_SECONDS: "10"
       MIN_FILE_SIZE_MB: "100"
 
+      # === LLM 兜底（可选，TMDB 搜不到时推断候选标题重试）===
+      # 兼容任何 OpenAI 格式接口：OpenAI / 本地 Ollama / LiteLLM 等
+      # LLM_API_URL: "https://api.openai.com/v1"
+      # LLM_API_KEY: ""
+      # LLM_MODEL: "gpt-4o-mini"
+      # LLM_TIMEOUT: "15"
+
       # === Telegram 通知(可选) ===
       TELEGRAM_BOT_TOKEN: ""
       TELEGRAM_CHAT_ID: ""

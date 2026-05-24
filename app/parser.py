@@ -28,6 +28,15 @@ JUNK_TAGS = [
     r'\b(internal|limited|festival|complete|multi|dual ?audio)\b',
 ]
 
+# 国内盗版站水印（先于主清洗执行）
+WATERMARK_PATTERNS = [
+    r'\[(?:https?://|www\.)[^\]]*\]\([^)]*\)',   # Markdown 链接 [text](url)
+    r'(?:https?://|www\.)\S+',                    # 裸 URL
+    r'地址发布页|收藏不迷路|最新地址|永久地址|备用地址'
+    r'|高清下载|在线观看|电影天堂|电影下载|最新电影|高清电影',
+    r'\d+[vV](?:电影|影视|视频)',                 # 6v电影 / 4v影视
+]
+
 # 字幕组/发布组标记 [xxx] / -GROUP
 RELEASE_GROUP_PATTERNS = [
     r'\[[^\]]+\]',           # [字幕组]
@@ -64,8 +73,16 @@ class ParsedName:
 
 def clean_filename(name: str) -> str:
     """剥离压制信息、字幕组标签,返回可能的片名字符串"""
-    # 去后缀
-    name = Path(name).stem
+    # 只在确认是媒体文件后缀时才去后缀（目录名不做截断）
+    p = Path(name)
+    suffix = p.suffix
+    if suffix and len(suffix) <= 5 and suffix[1:].isalnum():
+        name = p.stem
+    # else: 目录名 / 含 URL 的名称，保持原样进入清洗流程
+
+    # 先剥离国内盗版站水印（URL、推广文字等）
+    for pat in WATERMARK_PATTERNS:
+        name = re.sub(pat, ' ', name, flags=re.IGNORECASE)
 
     # 去字幕组/发布组标记
     for pat in RELEASE_GROUP_PATTERNS:
@@ -161,6 +178,8 @@ if __name__ == "__main__":
         "三体.Three-Body.2023.S01E01.WEB-DL.4K.HEVC.AAC-OurTV.mp4",
         "The.Bear.S03E10.1080p.WEB.H264-SuccessfulCrab.mkv",
         "流浪地球2.2023.BluRay.1080p.x265.10bit.AC3.mkv",
+        "凶器.6v电影 地址发布页 [www.6v123.net](https://www.6v123.net) 收藏不迷路",
+        "误杀2.2021.1080p www.8khdmi.com",
     ]
     for s in samples:
         p = parse(s)
