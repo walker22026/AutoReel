@@ -26,6 +26,9 @@ JUNK_TAGS = [
     # 其他
     r'\b(repack|proper|extended|director\'?s ?cut|theatrical|remastered|imax|unrated|criterion)\b',
     r'\b(internal|limited|festival|complete|multi|dual ?audio)\b',
+    r'原盘|内封|内嵌|外挂|字幕|中字|中英双字|简英双字|特效字幕|修正',
+    r'杜比视界|杜比|国英双音|国英双语|国韩双语|国粤双语|英语|粤语|国语',
+    r'感恩加长版|加长版|导演剪辑版|剧场版|无水印',
 ]
 
 # 国内盗版站水印（先于主清洗执行）
@@ -59,6 +62,7 @@ SEASON_EPISODE_PATTERNS = [
 ]
 
 YEAR_PATTERN = re.compile(r'\b(19\d{2}|20\d{2})\b')
+MEDIA_SUFFIXES = {".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".flv", ".rmvb", ".webm"}
 
 
 @dataclass
@@ -71,14 +75,17 @@ class ParsedName:
     raw: str = ""       # 原始文件名(无后缀)
 
 
+def strip_media_suffix(name: str) -> str:
+    p = Path(name)
+    if p.suffix.lower() in MEDIA_SUFFIXES:
+        return p.stem
+    return name
+
+
 def clean_filename(name: str) -> str:
     """剥离压制信息、字幕组标签,返回可能的片名字符串"""
-    # 只在确认是媒体文件后缀时才去后缀（目录名不做截断）
-    p = Path(name)
-    suffix = p.suffix
-    if suffix and len(suffix) <= 5 and suffix[1:].isalnum():
-        name = p.stem
-    # else: 目录名 / 含 URL 的名称，保持原样进入清洗流程
+    # 只剥离明确的视频后缀,避免目录名中的 .HDR (2024) 被误当后缀截断。
+    name = strip_media_suffix(name)
 
     # 先剥离国内盗版站水印（URL、推广文字等）
     for pat in WATERMARK_PATTERNS:
@@ -91,6 +98,13 @@ def clean_filename(name: str) -> str:
     # 去技术标签
     for pat in JUNK_TAGS:
         name = re.sub(pat, ' ', name, flags=re.IGNORECASE)
+
+    # 遇到常见画质/音轨描述时,目录名通常到这里已经是正片名。
+    name = re.split(
+        r'(?i)\s+(?:4k|8k|2160p|1080p|720p|uhd|hd|remux|bdremux|bluray|blu-ray|hdr|dv|hevc|h\.?265|x265)\b',
+        name,
+        maxsplit=1,
+    )[0]
 
     # 把分隔符统一成空格
     name = re.sub(r'[._\-\+]+', ' ', name)
@@ -140,7 +154,7 @@ def prefer_cjk_title(title: str) -> str:
 
 def parse(filename: str) -> ParsedName:
     """主入口:解析文件名"""
-    raw = Path(filename).stem
+    raw = strip_media_suffix(filename)
     cleaned = clean_filename(filename)
 
     season, episode = extract_season_episode(raw)

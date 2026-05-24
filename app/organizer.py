@@ -17,6 +17,15 @@ from notify import notify
 
 log = logging.getLogger("organizer")
 
+IGNORED_DIR_NAMES = {"@eaDir", ".DS_Store", "__MACOSX"}
+REASON_FILE_PATTERNS = [
+    re.compile(r'^目录.*无法识别\.txt$'),
+    re.compile(r'^目录中.*文件未识别到\.txt$'),
+    re.compile(r'^目录中.*目标文件已存在\.txt$'),
+    re.compile(r'.*\s未识别到\.txt$'),
+    re.compile(r'.*\s目标文件已存在\.txt$'),
+]
+
 
 def safe_name(name: str) -> str:
     """文件系统安全的文件名"""
@@ -70,6 +79,15 @@ def is_likely_tv_batch(videos: List[str]) -> bool:
     if len(videos) < 2:
         return False
     return all(is_episode_style_filename(video) for video in videos)
+
+
+def should_skip_path(path: str | Path) -> bool:
+    return any(part in IGNORED_DIR_NAMES for part in Path(path).parts)
+
+
+def is_reason_file(path: str | Path) -> bool:
+    name = Path(path).name
+    return any(pattern.match(name) for pattern in REASON_FILE_PATTERNS)
 
 
 class StateDB:
@@ -365,19 +383,37 @@ class MediaOrganizer:
 
     def video_files(self, directory: str) -> List[str]:
         files = []
-        for root, _, names in os.walk(directory):
+        for root, dirs, names in os.walk(directory):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIR_NAMES]
+            if should_skip_path(root):
+                continue
             for name in names:
                 path = os.path.join(root, name)
+                if should_skip_path(path):
+                    continue
                 if Path(path).suffix.lower() in settings.VIDEO_EXTENSIONS:
                     files.append(path)
         return sorted(files)
 
     def has_subtitle_files(self, directory: str) -> bool:
-        for root, _, names in os.walk(directory):
+        for root, dirs, names in os.walk(directory):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIR_NAMES]
+            if should_skip_path(root):
+                continue
             for name in names:
                 if Path(name).suffix.lower() in settings.SUBTITLE_EXTENSIONS:
                     return True
         return False
+
+    def validate_plan_targets(self, plan: List[Tuple[str, Dict, str]]) -> Optional[Dict]:
+        seen_targets = {}
+        for src, _info, dst in plan:
+            if os.path.exists(dst):
+                return {"reason": "duplicate_target_exists", "video": src, "target": dst}
+            if dst in seen_targets:
+                return {"reason": "duplicate_target_in_batch", "video": src, "target": dst, "other": seen_targets[dst]}
+            seen_targets[dst] = src
+        return None
 
     def plan_directory(self, directory: str) -> Tuple[List[Tuple[str, Dict, str]], Optional[Dict]]:
         dir_path = Path(directory)
@@ -496,12 +532,33 @@ class MediaOrganizer:
             dst = self.move_to_pending_delete(directory, "empty_or_no_media")
             return {"status": "skipped", "reason": "no_media", "src": directory, "dst": dst}
 
+        duplicate_failure = self.validate_plan_targets(plan)
+        if duplicate_failure:
+            failed_video = duplicate_failure["video"]
+            detail = (
+                "目录中存在重复目标文件,整个目录未整理:\n"
+                f"源文件: {failed_video}\n"
+                f"目标文件: {duplicate_failure['target']}\n"
+            )
+            if duplicate_failure.get("other"):
+                detail += f"同批次另一源文件: {duplicate_failure['other']}\n"
+            if not settings.DRY_RUN:
+                self.write_reason_file(directory, f"目录中{Path(failed_video).name}目标文件已存在.txt", detail)
+            dst = self.move_to_duplicates(directory, "directory_contains_duplicate_target")
+            self.state.mark_failed(directory, "directory_contains_duplicate_target", detail)
+            notify(f"⚠️ 目录存在重复目标: {Path(directory).name}")
+            return {"status": "failed", "reason": "directory_contains_duplicate_target", "src": directory, "dst": dst}
+
         # 所有 plan 共享同一个 dir_info，取第一条的 info 即可
         dir_info = plan[0][1]
         results = []
         for src, info, dst in plan:
             try:
                 action = self.transfer_file(src, dst)
+                if action == "exists":
+                    detail = f"执行前目标文件已存在,目录停止整理:\n源文件: {src}\n目标文件: {dst}\n"
+                    self.state.mark_failed(directory, "directory_transfer_duplicate", detail)
+                    return {"status": "failed", "reason": "directory_transfer_duplicate", "src": directory, "target": dst}
                 if action != "dry_run":
                     self.process_subtitles(src, dst)
                     if action != "exists":
@@ -526,11 +583,17 @@ class MediaOrganizer:
         """把源目录中视频以外的文件（.nfo、图片、未匹配字幕等）移动到目标根目录，
         保留相对于源目录的子目录结构。
         """
-        for root, _dirs, files in os.walk(directory):
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIR_NAMES]
+            if should_skip_path(root):
+                continue
             for name in files:
                 src = os.path.join(root, name)
                 if Path(src).suffix.lower() in settings.VIDEO_EXTENSIONS:
                     continue  # 视频已由主流程处理
+                if is_reason_file(src):
+                    log.info(f"跳过历史原因文件: {src}")
+                    continue
                 rel = os.path.relpath(src, directory)
                 dst = os.path.join(target_root, rel)
                 try:

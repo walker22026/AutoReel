@@ -15,7 +15,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from config import settings
-from organizer import MediaOrganizer
+from organizer import MediaOrganizer, should_skip_path
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
@@ -62,6 +62,8 @@ class InputHandler(FileSystemEventHandler):
 
         parts = rel.parts
         if not parts:
+            return None
+        if any(part.startswith(".") or part == "@eaDir" for part in parts):
             return None
 
         first = self.watch_dir / parts[0]
@@ -131,6 +133,8 @@ def scan_existing(handler: InputHandler):
             if item.resolve() in excluded:
                 continue
         except OSError:
+            continue
+        if should_skip_path(item) or item.name.startswith("."):
             continue
 
         if item.is_dir():

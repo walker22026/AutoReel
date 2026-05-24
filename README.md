@@ -69,7 +69,7 @@ git pull
 services:
   media-organizer:
     build: .
-    container_name: media-organizer
+    container_name: AutoReel
     restart: unless-stopped
     environment:
       # === 路径配置（容器内路径，与 volumes 对应）===
