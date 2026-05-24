@@ -22,6 +22,8 @@ class Settings:
     UNRECOGNIZED_DIR_NAME = os.getenv("UNRECOGNIZED_DIR_NAME", "_unrecognized")
     UNRECOGNIZED_DIR = os.getenv("UNRECOGNIZED_DIR", "")
     DUPLICATE_DIR_NAME = os.getenv("DUPLICATE_DIR_NAME", "_duplicates")
+    PENDING_DELETE_DIR_NAME = os.getenv("PENDING_DELETE_DIR_NAME", "_pending_delete")
+    PENDING_DELETE_DIR = os.getenv("PENDING_DELETE_DIR", "")
 
     # TMDB
     TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
@@ -62,6 +64,12 @@ class Settings:
     @property
     def duplicate_dir(self) -> str:
         return str(Path(self.unrecognized_dir) / self.DUPLICATE_DIR_NAME)
+
+    @property
+    def pending_delete_dir(self) -> str:
+        if self.PENDING_DELETE_DIR:
+            return self.PENDING_DELETE_DIR
+        return str(Path(self.WATCH_DIR) / self.PENDING_DELETE_DIR_NAME)
 
 
 settings = Settings()

@@ -10,6 +10,7 @@ services:
       TV_DIR: /host/emby/剧集
       UNRECOGNIZED_DIR_NAME: _unrecognized
       DUPLICATE_DIR_NAME: _duplicates
+      PENDING_DELETE_DIR_NAME: _pending_delete
 
       # === TMDB ===
       # 填 API 密钥 v3 auth,不是 v4 Read Access Token

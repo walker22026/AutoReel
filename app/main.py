@@ -32,6 +32,7 @@ class InputHandler(FileSystemEventHandler):
         self.pending = {}
         self.watch_dir = Path(settings.WATCH_DIR).resolve()
         self.unrecognized_dir = Path(settings.unrecognized_dir).resolve()
+        self.pending_delete_dir = Path(settings.pending_delete_dir).resolve()
 
     def on_created(self, event):
         self.queue(event.src_path)
@@ -64,7 +65,10 @@ class InputHandler(FileSystemEventHandler):
             return None
 
         first = self.watch_dir / parts[0]
-        if first.resolve() == self.unrecognized_dir:
+        first_resolved = first.resolve()
+        if first_resolved == self.unrecognized_dir:
+            return None
+        if first_resolved == self.pending_delete_dir:
             return None
 
         if first.is_dir():
@@ -78,6 +82,11 @@ class InputHandler(FileSystemEventHandler):
     def is_in_unrecognized(self, path: Path) -> bool:
         try:
             path.resolve().relative_to(self.unrecognized_dir)
+            return True
+        except (OSError, ValueError):
+            pass
+        try:
+            path.resolve().relative_to(self.pending_delete_dir)
             return True
         except (OSError, ValueError):
             return False
@@ -106,15 +115,20 @@ def ensure_dirs():
     Path(settings.MOVIE_DIR).mkdir(parents=True, exist_ok=True)
     Path(settings.TV_DIR).mkdir(parents=True, exist_ok=True)
     Path(settings.unrecognized_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.pending_delete_dir).mkdir(parents=True, exist_ok=True)
 
 
 def scan_existing(handler: InputHandler):
     """启动时扫描输入目录的第一层:根目录视频文件 + 根目录子目录。"""
     log.info(f"扫描输入目录: {settings.WATCH_DIR}")
     watch = Path(settings.WATCH_DIR)
+    excluded = {
+        Path(settings.unrecognized_dir).resolve(),
+        Path(settings.pending_delete_dir).resolve(),
+    }
     for item in sorted(watch.iterdir(), key=lambda p: p.name):
         try:
-            if item.resolve() == Path(settings.unrecognized_dir).resolve():
+            if item.resolve() in excluded:
                 continue
         except OSError:
             continue
@@ -132,6 +146,7 @@ def main():
     log.info(f"电影目录: {settings.MOVIE_DIR}")
     log.info(f"剧集目录: {settings.TV_DIR}")
     log.info(f"未识别目录: {settings.unrecognized_dir}")
+    log.info(f"待删除目录: {settings.pending_delete_dir}")
     log.info(f"文件动作: {settings.FILE_ACTION}, Dry Run: {settings.DRY_RUN}")
 
     ensure_dirs()

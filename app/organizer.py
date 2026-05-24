@@ -121,15 +121,12 @@ class MediaOrganizer:
 
     def identify(self, filename: str) -> Optional[Dict]:
         """识别:规则解析 -> TMDB 查询。"""
-        # Step 1: 规则解析
         parsed = pname.parse(filename)
         log.debug(f"规则解析: {parsed}")
 
-        # Step 2: TMDB 查询
         if parsed.title:
             result = self.tmdb.identify(parsed.title, parsed.year, parsed.is_tv)
             if result:
-                # 把季集信息补上
                 result["season"] = parsed.season
                 result["episode"] = parsed.episode
                 log.info(f"规则+TMDB 命中: {filename} -> {result['title']} ({result['year']})")
@@ -138,8 +135,26 @@ class MediaOrganizer:
         log.warning(f"无法识别: {filename}")
         return None
 
-    def build_target_path(self, src: str, info: Dict) -> str:
-        """根据 TMDB 信息构造目标路径"""
+    def identify_dir(self, dirname: str) -> Optional[Dict]:
+        """使用目录名识别媒体信息（目录批次专用）。"""
+        parsed = pname.parse(dirname)
+        log.debug(f"目录名规则解析: {parsed}")
+
+        if parsed.title:
+            result = self.tmdb.identify(parsed.title, parsed.year, parsed.is_tv)
+            if result:
+                result["season"] = parsed.season
+                result["episode"] = parsed.episode
+                log.info(f"目录名识别命中: {dirname} -> {result['title']} ({result['year']})")
+                return result
+
+        log.warning(f"目录名无法识别: {dirname}")
+        return None
+
+    def build_target_path(self, src: str, info: Dict, keep_name: bool = False) -> str:
+        """根据 TMDB 信息构造目标路径。
+        keep_name=True 时剧集保留原始文件名（目录批次模式）。
+        """
         ext = Path(src).suffix
         title = safe_name(info["title"])
         year = info.get("year") or "Unknown"
@@ -155,9 +170,20 @@ class MediaOrganizer:
             season = info.get("season") or 1
             episode = info.get("episode") or 0
             season_dir = f"Season {season:02d}"
-            ep_str = f"S{season:02d}E{episode:02d}" if episode else f"S{season:02d}"
-            filename = f"{title} - {ep_str}{ext}"
+            if keep_name:
+                filename = Path(src).name
+            else:
+                ep_str = f"S{season:02d}E{episode:02d}" if episode else f"S{season:02d}"
+                filename = f"{title} - {ep_str}{ext}"
             return os.path.join(settings.TV_DIR, folder, season_dir, filename)
+
+    def _target_show_root(self, info: Dict) -> str:
+        """返回剧集/电影的顶层目标目录（用于存放附属文件）。"""
+        title = safe_name(info["title"])
+        year = info.get("year") or "Unknown"
+        folder = f"{title} ({year})"
+        base = settings.TV_DIR if info["type"] == "tv" else settings.MOVIE_DIR
+        return os.path.join(base, folder)
 
     def transfer_file(self, src: str, dst: str):
         """按配置移动、硬链接或复制文件到目标路径。"""
@@ -193,20 +219,26 @@ class MediaOrganizer:
         self.transfer_file(src, dst)
 
     def process_subtitles(self, src: str, dst: str):
-        """同目录下同名字幕跟随处理"""
+        """同目录下同名字幕跟随处理。字幕按目标视频文件名规范重命名。"""
         src_path = Path(src)
         dst_path = Path(dst)
         base = src_path.stem
 
-        for sub in src_path.parent.glob(f"{base}*"):
-            if sub.suffix.lower() in settings.SUBTITLE_EXTENSIONS:
-                # 字幕保留语言后缀,如 .zh.srt
-                sub_suffix = sub.name[len(base):]
-                sub_dst = dst_path.parent / (dst_path.stem + sub_suffix)
-                try:
-                    self.transfer_file(str(sub), str(sub_dst))
-                except Exception as e:
-                    log.warning(f"字幕处理失败 {sub}: {e}")
+        # glob 不支持特殊字符,改用目录遍历匹配
+        for sub in src_path.parent.iterdir():
+            if not sub.is_file():
+                continue
+            if sub.suffix.lower() not in settings.SUBTITLE_EXTENSIONS:
+                continue
+            if not sub.name.startswith(base):
+                continue
+            # 字幕保留语言后缀,如 .zh.srt
+            sub_suffix = sub.name[len(base):]
+            sub_dst = dst_path.parent / (dst_path.stem + sub_suffix)
+            try:
+                self.transfer_file(str(sub), str(sub_dst))
+            except Exception as e:
+                log.warning(f"字幕处理失败 {sub}: {e}")
 
     def quarantine(self, src: str, base_dir: str, reason: str) -> str:
         """把文件或目录移入指定隔离目录。"""
@@ -230,6 +262,10 @@ class MediaOrganizer:
     def move_to_duplicates(self, src: str, reason: str) -> str:
         """把重复文件或目录移入未识别目录下的重复区域。"""
         return self.quarantine(src, settings.duplicate_dir, reason)
+
+    def move_to_pending_delete(self, src: str, reason: str) -> str:
+        """把空目录移入待删除目录。"""
+        return self.quarantine(src, settings.pending_delete_dir, reason)
 
     def write_reason_file(self, directory: str, name: str, detail: str):
         if settings.DRY_RUN:
@@ -307,7 +343,22 @@ class MediaOrganizer:
                     files.append(path)
         return sorted(files)
 
+    def has_subtitle_files(self, directory: str) -> bool:
+        for root, _, names in os.walk(directory):
+            for name in names:
+                if Path(name).suffix.lower() in settings.SUBTITLE_EXTENSIONS:
+                    return True
+        return False
+
     def plan_directory(self, directory: str) -> Tuple[List[Tuple[str, Dict, str]], Optional[Dict]]:
+        dir_path = Path(directory)
+
+        # 优先用目录名识别媒体标题，文件名仅用于提取季集号
+        dir_info = self.identify_dir(dir_path.name)
+        if not dir_info:
+            return [], {"reason": "unidentified_directory", "path": directory}
+
+        is_tv = dir_info["type"] == "tv"
         plan = []
         for video in self.video_files(directory):
             try:
@@ -318,10 +369,17 @@ class MediaOrganizer:
             except OSError:
                 continue
 
-            info = self.identify(Path(video).name)
-            if not info:
-                return [], {"reason": "unidentified", "video": video}
-            dst = self.build_target_path(video, info)
+            info = dict(dir_info)
+            if is_tv:
+                # 从文件名提取季集号，覆盖目录解析结果
+                parsed = pname.parse(Path(video).name)
+                if parsed.season is not None:
+                    info["season"] = parsed.season
+                if parsed.episode is not None:
+                    info["episode"] = parsed.episode
+
+            # 剧集保留原始文件名；电影使用标准命名
+            dst = self.build_target_path(video, info, keep_name=is_tv)
             if os.path.exists(dst):
                 return [], {"reason": "duplicate_target_exists", "video": video, "target": dst}
             plan.append((video, info, dst))
@@ -335,8 +393,8 @@ class MediaOrganizer:
 
         plan, failure = self.plan_directory(directory)
         if failure:
-            failed_video = failure["video"]
             if failure["reason"] == "duplicate_target_exists":
+                failed_video = failure["video"]
                 reason_name = f"目录中{Path(failed_video).name}目标文件已存在.txt"
                 detail = (
                     "目录中存在目标文件已存在的视频,整个目录未整理:\n"
@@ -348,21 +406,32 @@ class MediaOrganizer:
                 dst = self.move_to_duplicates(directory, "directory_contains_duplicate_target")
                 self.state.mark_failed(directory, "directory_contains_duplicate_target", detail)
                 notify(f"⚠️ 目录存在重复目标: {Path(directory).name}")
-                return {"status": "failed", "reason": "directory_contains_duplicate_target", "src": directory, "dst": dst, "failed_video": failed_video, "target": failure["target"]}
+                return {"status": "failed", "reason": "directory_contains_duplicate_target", "src": directory, "dst": dst}
 
-            reason_name = f"目录中{Path(failed_video).name}文件未识别到.txt"
-            detail = f"目录中存在未识别视频文件,整个目录未整理:\n{failed_video}\n"
+            # unidentified_directory: 目录名无法识别
+            dir_name = Path(directory).name
+            reason_name = f"目录{dir_name}无法识别.txt"
+            detail = f"目录名无法识别,整个目录未整理:\n{directory}\n"
             if not settings.DRY_RUN:
                 self.write_reason_file(directory, reason_name, detail)
-            dst = self.move_to_unrecognized(directory, "directory_contains_unidentified_video")
-            self.state.mark_failed(directory, "directory_contains_unidentified_video", detail)
-            notify(f"⚠️ 目录未识别: {Path(directory).name}")
-            return {"status": "failed", "reason": "directory_contains_unidentified_video", "src": directory, "dst": dst, "failed_video": failed_video}
+            dst = self.move_to_unrecognized(directory, "directory_unidentified")
+            self.state.mark_failed(directory, "directory_unidentified", detail)
+            notify(f"⚠️ 目录未识别: {dir_name}")
+            return {"status": "failed", "reason": "directory_unidentified", "src": directory, "dst": dst}
 
         if not plan:
-            log.info(f"目录中没有可处理视频: {directory}")
-            return {"status": "skipped", "reason": "no_video", "src": directory}
+            if self.has_subtitle_files(directory):
+                log.info(f"目录中只有字幕文件，没有视频，移入未识别: {directory}")
+                dst = self.move_to_unrecognized(directory, "subtitle_only")
+                self.state.mark_failed(directory, "subtitle_only", "目录中只有字幕文件，没有视频")
+                notify(f"⚠️ 仅含字幕无视频: {Path(directory).name}")
+                return {"status": "failed", "reason": "subtitle_only", "src": directory, "dst": dst}
+            log.info(f"目录中无视频无字幕，移入待删除: {directory}")
+            dst = self.move_to_pending_delete(directory, "empty_or_no_media")
+            return {"status": "skipped", "reason": "no_media", "src": directory, "dst": dst}
 
+        # 所有 plan 共享同一个 dir_info，取第一条的 info 即可
+        dir_info = plan[0][1]
         results = []
         for src, info, dst in plan:
             try:
@@ -378,16 +447,40 @@ class MediaOrganizer:
                 return {"status": "failed", "reason": "directory_transfer_failed", "src": directory, "error": str(e)}
 
         if not settings.DRY_RUN and settings.FILE_ACTION == "move":
+            # 把目录内剩余附属文件（非视频）也一起迁移到目标目录
+            target_root = self._target_show_root(dir_info)
+            self._move_remaining_files(directory, target_root)
+            # 清理已空的源目录
             self.cleanup_empty_dirs(directory)
+
         notify(f"✅ 目录整理完成: {Path(directory).name}")
         return {"status": "ok", "src": directory, "count": len(results), "results": results}
 
+    def _move_remaining_files(self, directory: str, target_root: str):
+        """把源目录中视频以外的文件（.nfo、图片、未匹配字幕等）移动到目标根目录，
+        保留相对于源目录的子目录结构。
+        """
+        for root, _dirs, files in os.walk(directory):
+            for name in files:
+                src = os.path.join(root, name)
+                if Path(src).suffix.lower() in settings.VIDEO_EXTENSIONS:
+                    continue  # 视频已由主流程处理
+                rel = os.path.relpath(src, directory)
+                dst = os.path.join(target_root, rel)
+                try:
+                    Path(dst).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(src, dst)
+                    log.info(f"移动附属文件: {src} -> {dst}")
+                except Exception as e:
+                    log.warning(f"移动附属文件失败 {src}: {e}")
+
     def cleanup_empty_dirs(self, directory: str):
-        """移动模式下清理源目录剩余空目录。"""
-        for root, dirs, files in os.walk(directory, topdown=False):
+        """清理目录树中的空目录（包括根目录自身）。
+        os.rmdir 只在目录为空时成功，无需额外判断。
+        """
+        for root, _dirs, _files in os.walk(directory, topdown=False):
             try:
-                if not dirs and not files:
-                    os.rmdir(root)
+                os.rmdir(root)
             except OSError:
                 pass
 
