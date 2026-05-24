@@ -168,31 +168,32 @@ class MediaOrganizer:
 
     def transfer_file(self, src: str, dst: str):
         """按配置移动、硬链接或复制文件到目标路径。"""
-        Path(dst).parent.mkdir(parents=True, exist_ok=True)
-
         if os.path.exists(dst):
             log.info(f"目标已存在,跳过: {dst}")
-            return
+            return "exists"
 
         if settings.DRY_RUN:
             log.info(f"[DRY-RUN][{settings.FILE_ACTION}] {src} -> {dst}")
-            return
+            return "dry_run"
+
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
 
         if settings.FILE_ACTION == "move":
             shutil.move(src, dst)
             log.info(f"移动/重命名成功: {dst}")
-            return
+            return "moved"
 
         if settings.FILE_ACTION == "hardlink":
             try:
                 os.link(src, dst)
                 log.info(f"硬链接成功: {dst}")
-                return
+                return "hardlinked"
             except OSError as e:
                 log.warning(f"硬链接失败(可能跨设备),改为复制: {e}")
 
         shutil.copy2(src, dst)
         log.info(f"复制成功: {dst}")
+        return "copied"
 
     def link_or_copy(self, src: str, dst: str):
         """兼容旧调用名。"""
@@ -246,13 +247,17 @@ class MediaOrganizer:
 
         # 执行链接
         try:
-            self.transfer_file(src, dst)
+            action = self.transfer_file(src, dst)
+            if action == "dry_run":
+                return {"status": "dry_run", "src": src, "dst": dst, "info": info}
+
             self.process_subtitles(src, dst)
-            self.state.mark(src, dst, info)
+            if action != "exists":
+                self.state.mark(src, dst, info)
 
             type_emoji = "🎬" if info["type"] == "movie" else "📺"
             notify(f"{type_emoji} 整理完成: {info['title']} ({info['year']})")
-            return {"status": "ok", "src": src, "dst": dst, "info": info}
+            return {"status": "ok" if action != "exists" else "skipped", "reason": action, "src": src, "dst": dst, "info": info}
         except Exception as e:
             log.exception(f"链接失败: {e}")
             notify(f"❌ 整理失败: {Path(src).name}\n{e}")
@@ -274,11 +279,15 @@ class MediaOrganizer:
 
         dst = self.build_target_path(src, info)
         try:
-            self.transfer_file(src, dst)
+            action = self.transfer_file(src, dst)
+            if action == "dry_run":
+                return {"status": "dry_run", "src": src, "dst": dst, "info": info}
+
             self.process_subtitles(src, dst)
-            self.state.mark(src, dst, info)
+            if action != "exists":
+                self.state.mark(src, dst, info)
             notify(f"✅ 人工整理完成: {info['title']} ({info.get('year') or 'Unknown'})")
-            return {"status": "ok", "src": src, "dst": dst, "info": info}
+            return {"status": "ok" if action != "exists" else "skipped", "reason": action, "src": src, "dst": dst, "info": info}
         except Exception as e:
             log.exception(f"人工整理失败: {e}")
             self.state.mark_failed(src, "manual_failed", str(e))
