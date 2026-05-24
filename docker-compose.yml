@@ -13,7 +13,7 @@ services:
 
     volumes:
       # NAS 文件根目录。群晖通常是 /volume1,首次使用后在 Web 中选择 /host/volume1 下的下载/媒体目录。
-      - /volume1:/host/volume1
+      - /volumeUSB1/usbshare/emby:/host/emby
       # 配置文件与状态数据库
       - ./config:/config
 
